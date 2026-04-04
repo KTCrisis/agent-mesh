@@ -260,7 +260,59 @@ policies:
         action: deny            # fail closed
 ```
 
-Actions: `allow`, `deny`, `human_approval`
+### Policy actions
+
+| Action | HTTP code | Behavior |
+|--------|-----------|----------|
+| `allow` | `200` | Forward the call to the backend, return the result |
+| `deny` | `403` | Block the call, no forwarding. Reason included in response |
+| `human_approval` | `202` | Block the call pending human review. Traced as pending |
+
+Default behavior: **fail closed** — if no rule matches, the call is denied.
+
+### Policy evaluation
+
+Rules are evaluated **in order** (first match wins):
+
+1. Find the first policy where `agent` pattern matches the caller
+2. Within that policy, find the first rule where `tools` matches the tool name
+3. If the rule has a `condition`, evaluate it against the call params
+4. If condition passes (or no condition), return the action
+5. If no rule matches anywhere, return `deny` (fail closed)
+
+### Conditions
+
+Conditions allow fine-grained control based on call parameters:
+
+```yaml
+condition:
+  field: "params.amount"     # dot-path into the request params
+  operator: "<"              # comparison operator
+  value: 500                 # threshold
+```
+
+Operators: `<`, `<=`, `>`, `>=`, `==`, `!=`
+
+### Agent patterns
+
+The `agent` field supports glob patterns:
+
+| Pattern | Matches |
+|---------|---------|
+| `"support-*"` | `support-bot`, `support-agent-1` |
+| `"admin-*"` | `admin-1`, `admin-ops` |
+| `"claude"` | exactly `claude` |
+| `"*"` | any agent (including `anonymous`) |
+
+### Tool patterns
+
+The `tools` field is a list of exact tool names, or `"*"` for all:
+
+```yaml
+- tools: ["get_order", "get_customer"]    # specific tools
+- tools: ["filesystem.read_file"]          # namespaced MCP tool
+- tools: ["*"]                             # all tools
+```
 
 ## API
 
