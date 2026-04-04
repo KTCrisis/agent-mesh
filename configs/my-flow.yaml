@@ -1,5 +1,5 @@
 port: 9090
-trace_file: traces.jsonl
+trace_file: /home/fluxart/agent-mesh/traces.jsonl
 
 mcp_servers:
   - name: filesystem
