@@ -567,3 +567,140 @@ Conventions :
 - `t.Fatal("msg")` → stoppe le test immédiatement
 - `t.Errorf("msg")` → note l'erreur mais continue
 - `t.Helper()` → marque une fonction comme helper (meilleurs messages d'erreur)
+
+---
+
+## Go pour les Pythonistas
+
+Guide de correspondance rapide pour lire le code agent-mesh quand on vient de Python/FastAPI.
+
+### Types et structures
+
+| Python | Go | Exemple agent-mesh |
+|--------|-----|-------------------|
+| `class Tool:` | `type Tool struct { ... }` | `registry/registry.go` |
+| `def __init__(self):` | `func New() *Registry { ... }` | Pas de constructeur, on utilise des fonctions `NewXxx()` |
+| `self.tools` | `r.tools` | Le receiver `r` remplace `self` |
+| `dict[str, Tool]` | `map[string]*Tool` | `*Tool` = pointeur vers un Tool |
+| `list[Tool]` | `[]*Tool` | Slice de pointeurs |
+| `Optional[str]` | `string` + `omitempty` en JSON | Les strings vides = "pas de valeur" |
+| `@dataclass` | `type Xxx struct` avec tags JSON | Les tags `` `json:"name"` `` contrôlent la sérialisation |
+| `from pydantic import BaseModel` | `type Config struct` + `yaml:"field"` | `config/config.go` — les tags YAML font le parsing |
+
+### Fonctions et méthodes
+
+| Python | Go | Exemple |
+|--------|-----|---------|
+| `def get(self, name):` | `func (r *Registry) Get(name string) *Tool` | Le `(r *Registry)` est le receiver = `self` |
+| `return tool, error` | `return tool, err` | Go retourne souvent 2 valeurs : résultat + erreur |
+| `if err := ...; err != nil` | `try: ... except:` | Pas de try/catch en Go, on vérifie `err != nil` après chaque appel |
+| `raise ValueError("...")` | `return fmt.Errorf("...")` | Pas de raise, on retourne l'erreur |
+| `with open(f) as file:` | `f, err := os.Open(path); defer f.Close()` | `defer` = exécuté à la sortie de la fonction (comme `finally`) |
+
+### Concurrence
+
+| Python | Go | Exemple agent-mesh |
+|--------|-----|-------------------|
+| `threading.Thread` | `go maFonction()` | `go c.readLoop()` dans `mcp/client.go` |
+| `threading.Lock()` | `sync.Mutex` | `writeMu` dans le transport stdio |
+| `threading.RLock()` | `sync.RWMutex` | `mu` dans `registry/registry.go` — plusieurs lecteurs, un seul écrivain |
+| `queue.Queue()` | `chan rpcResponse` | Les channels dans `mcp/client.go` pour send/receive entre goroutines |
+| `asyncio.wait_for(coro, timeout)` | `select { case <-ch: case <-ctx.Done(): }` | `send()` dans `mcp/client.go` |
+| `async with` | pas d'équivalent | Go n'est pas async/await, c'est des goroutines + channels |
+
+### Interfaces
+
+| Python | Go | Pourquoi |
+|--------|-----|---------|
+| `class MCPForwarder(Protocol):` | `type MCPForwarder interface { ... }` | `proxy/handler.go` |
+| `def call_tool(self, ...):` | `CallTool(ctx, serverName, toolName, args)` | Méthode de l'interface |
+| Pas besoin de `implements` | Pas besoin de `implements` | Si le type a les bonnes méthodes, il implémente l'interface automatiquement |
+
+En Python tu ferais :
+```python
+class MCPForwarder(Protocol):
+    def call_tool(self, server: str, tool: str, args: dict) -> Any: ...
+    def server_statuses(self) -> Any: ...
+```
+
+En Go c'est :
+```go
+type MCPForwarder interface {
+    CallTool(ctx context.Context, serverName, toolName string, args map[string]any) (any, error)
+    ServerStatuses() any
+}
+```
+
+`Manager` dans `mcp/manager.go` implémente cette interface simplement parce qu'il a les bonnes méthodes — pas de déclaration explicite.
+
+### HTTP
+
+| Python/FastAPI | Go | Exemple agent-mesh |
+|---------------|-----|-------------------|
+| `@app.get("/tools")` | `case r.URL.Path == "/tools":` | `proxy/handler.go` — pas de décorateur, un switch sur le path |
+| `FastAPI()` | `http.Server{Handler: handler}` | `main.go` |
+| `uvicorn.run(app)` | `srv.ListenAndServe()` | `main.go` |
+| `JSONResponse(data)` | `json.NewEncoder(w).Encode(data)` | `writeJSON()` dans `proxy/handler.go` |
+| `request.json()` | `json.NewDecoder(r.Body).Decode(&req)` | `handleToolCall()` |
+| `HTTPException(403)` | `writeJSON(w, 403, resp)` | Pas d'exceptions, on écrit la réponse directement |
+
+### Config / YAML
+
+| Python | Go | Exemple |
+|--------|-----|---------|
+| `pydantic.BaseModel` + `yaml.safe_load()` | `type Config struct` + `yaml.Unmarshal()` | `config/config.go` |
+| Validation automatique par Pydantic | Pas de validation automatique | Les champs vides sont acceptés, il faut vérifier manuellement |
+| `config.port or 9090` | `if cfg.Port == 0 { cfg.Port = 9090 }` | Défauts explicites dans `Load()` |
+
+### Patterns récurrents dans le code
+
+**Erreur handling (le plus déroutant pour un Pythonista) :**
+```go
+// Go : chaque appel retourne une erreur qu'on vérifie
+result, err := doSomething()
+if err != nil {
+    return fmt.Errorf("context: %w", err)  // wrap l'erreur avec du contexte
+}
+```
+
+Équivalent Python :
+```python
+try:
+    result = do_something()
+except Exception as e:
+    raise RuntimeError(f"context: {e}") from e
+```
+
+**Defer (cleanup automatique) :**
+```go
+f, err := os.Open(path)
+if err != nil { return err }
+defer f.Close()  // sera appelé quand la fonction retourne, quoi qu'il arrive
+// ... utiliser f ...
+```
+
+Équivalent Python :
+```python
+with open(path) as f:
+    # ... utiliser f ...
+```
+
+**Select (attendre plusieurs événements) :**
+```go
+select {
+case resp := <-ch:       // une réponse est arrivée
+    return resp, nil
+case <-c.done:           // la connexion est morte
+    return rpcResponse{}, errors.New("connection lost")
+case <-ctx.Done():       // timeout ou annulation
+    return rpcResponse{}, ctx.Err()
+}
+```
+
+Équivalent Python (approximatif) :
+```python
+done, pending = await asyncio.wait(
+    [response_future, done_event.wait(), ctx_deadline],
+    return_when=asyncio.FIRST_COMPLETED
+)
+```
