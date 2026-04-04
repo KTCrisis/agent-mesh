@@ -7,6 +7,11 @@ mcp_servers:
     command: npx
     args: ["-y", "@modelcontextprotocol/server-filesystem", "/home/fluxart"]
 
+  - name: gmail
+    transport: stdio
+    command: npx
+    args: ["-y", "@monsoft/mcp-gmail"]
+
   # Uncomment when GITHUB_TOKEN is set:
   # - name: github
   #   transport: stdio
@@ -19,7 +24,7 @@ policies:
   - name: claude
     agent: "claude"
     rules:
-      # Filesystem — read operations
+      # Filesystem — read only
       - tools:
           [
             "filesystem.directory_tree",
@@ -34,8 +39,6 @@ policies:
             "filesystem.search_files",
           ]
         action: allow
-
-      # Filesystem — write operations (block by default)
       - tools:
           [
             "filesystem.create_directory",
@@ -45,21 +48,42 @@ policies:
           ]
         action: deny
 
-      # GitHub — read operations (uncomment with github MCP server)
-      # - tools: ["github.list_issues", "github.get_issue", "github.search_repos",
-      #           "github.get_pull_request", "github.list_pull_requests",
-      #           "github.get_file_contents", "github.list_commits"]
-      #   action: allow
-
-      # GitHub — write operations (needs approval)
-      # - tools: ["github.create_issue", "github.create_pull_request",
-      #           "github.add_issue_comment"]
-      #   action: human_approval
-
-      # GitHub — dangerous operations
-      # - tools: ["github.push_files", "github.merge_pull_request",
-      #           "github.delete_repository"]
-      #   action: deny
+      # Gmail — read only
+      - tools:
+          [
+            "gmail.gmail_read_email",
+            "gmail.gmail_list_emails",
+            "gmail.gmail_list_emails_with_advanced_filters",
+            "gmail.gmail_list_email_labels",
+            "gmail.gmail_get_forwarding",
+            "gmail.gmail_get_vacation_responder",
+          ]
+        action: allow
+      # Gmail — all write/modify/delete operations blocked
+      - tools:
+          [
+            "gmail.gmail_send_email",
+            "gmail.gmail_draft_email",
+            "gmail.gmail_delete_email",
+            "gmail.gmail_delete_label",
+            "gmail.gmail_create_label",
+            "gmail.gmail_update_label",
+            "gmail.gmail_archive_email",
+            "gmail.gmail_move_to_trash",
+            "gmail.gmail_recover_from_trash",
+            "gmail.gmail_mark_as_read",
+            "gmail.gmail_mark_as_unread",
+            "gmail.gmail_modify_email",
+            "gmail.gmail_set_vacation_responder",
+            "gmail.gmail_update_forwarding",
+            "gmail.gmail_batch_archive",
+            "gmail.gmail_batch_delete",
+            "gmail.gmail_batch_mark_as_read",
+            "gmail.gmail_batch_mark_as_unread",
+            "gmail.gmail_batch_modify",
+            "gmail.gmail_batch_move_to_trash",
+          ]
+        action: deny
 
   - name: default
     agent: "*"
