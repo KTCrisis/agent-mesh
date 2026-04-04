@@ -1,0 +1,36 @@
+port: 9090
+
+policies:
+  # Support agent — can read but limited writes
+  - name: support-agent
+    agent: "support-*"
+    rules:
+      # Read operations — always allowed
+      - tools: ["get_pet_by_id", "find_pets_by_status", "get_inventory"]
+        action: allow
+
+      # Add a pet — allowed
+      - tools: ["add_pet"]
+        action: allow
+
+      # Update — needs human approval
+      - tools: ["update_pet"]
+        action: human_approval
+
+      # Delete — denied
+      - tools: ["delete_pet"]
+        action: deny
+
+  # Admin agent — full access
+  - name: admin-agent
+    agent: "admin-*"
+    rules:
+      - tools: ["*"]
+        action: allow
+
+  # Default — deny everything (fail closed)
+  - name: default
+    agent: "*"
+    rules:
+      - tools: ["*"]
+        action: deny
