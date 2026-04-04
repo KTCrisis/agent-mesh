@@ -9,11 +9,109 @@ Agent → API                  Agent → Sidecar → API / MCP servers
                               auth · policy · trace
 ```
 
-## Why
+## The problem
 
-AI agents (LangChain, CrewAI, Claude, custom) can call APIs and tools. But there's no standard way to control **what** they call, **who** can call it, and **what happened**. Agent Mesh solves this with a single proxy.
+Today, when you connect MCP servers to Claude Code, Cursor, or any AI agent, the agent gets **direct, ungoverned access** to every tool:
 
-- **Framework agnostic** — works with any agent that makes HTTP calls or uses MCP
+```bash
+# Claude Code: direct access to everything
+claude mcp add filesystem -- npx @modelcontextprotocol/server-filesystem /
+claude mcp add github -- npx @modelcontextprotocol/server-github
+claude mcp add database -- npx mcp-server-sqlite --db prod.db
+```
+
+```
+Claude ──▶ filesystem (full access — can delete anything)
+Claude ──▶ github (full access — can push to main)
+Claude ──▶ database (full access — can DROP TABLE)
+```
+
+No policy. No trace. No control. If something goes wrong, you don't even know what happened.
+
+## The solution
+
+Replace N direct connections with **one** — through agent-mesh:
+
+```bash
+# One MCP server instead of three — agent-mesh handles the rest
+claude mcp add agent-mesh -- ./agent-mesh --mcp --config policies.yaml
+```
+
+```
+Claude ──▶ agent-mesh ──▶ filesystem (read only)
+               │      ──▶ github (read, create issues — no push)
+               │      ──▶ database (SELECT only — no DELETE)
+               ↓
+         policy · trace
+```
+
+The agent doesn't know it's going through a proxy. It sees a normal MCP server with tools. But every call is checked against policies and traced.
+
+## Use cases
+
+### Solo developer — prevent accidents
+
+You use Claude Code with MCP servers but want guardrails:
+
+```yaml
+policies:
+  - name: claude
+    agent: "claude"
+    rules:
+      - tools: ["filesystem.read_file", "filesystem.list_directory"]
+        action: allow
+      - tools: ["filesystem.write_file", "filesystem.move_file"]
+        action: deny    # no accidental file writes
+```
+
+### Team — shared, reviewable config
+
+Instead of each developer configuring their own MCP servers, the team shares one `policies.yaml` — versioned in git, reviewed in PRs:
+
+```yaml
+policies:
+  - name: senior-devs
+    agent: "senior-*"
+    rules:
+      - tools: ["*"]
+        action: allow
+  - name: junior-devs
+    agent: "junior-*"
+    rules:
+      - tools: ["*.read_*", "*.list_*", "*.get_*"]
+        action: allow
+      - tools: ["*"]
+        action: deny
+```
+
+### Enterprise — agents in production
+
+Autonomous agents (LangChain, CrewAI) call internal APIs. Every call is traced and auditable:
+
+```bash
+curl http://localhost:9090/traces | jq
+```
+
+```json
+[
+  {"agent": "support-bot", "tool": "create_refund", "params": {"amount": 450}, "policy": "allow"},
+  {"agent": "support-bot", "tool": "create_refund", "params": {"amount": 5000}, "policy": "deny"}
+]
+```
+
+### REST APIs — governance without MCP
+
+You have existing REST APIs (with OpenAPI/Swagger specs) and want agents to use them with governance — without building an MCP server:
+
+```bash
+# Import OpenAPI → agent-mesh adds policy + trace → Export as MCP for Claude
+./agent-mesh --mcp --openapi https://your-api.com/swagger.json --config policies.yaml
+```
+
+## Why agent-mesh
+
+- **Framework agnostic** — works with Claude Code, Cursor, LangChain, CrewAI, raw HTTP, anything
+- **Zero agent code change** — the agent calls agent-mesh instead of the real backend. That's it
 - **Policy as code** — YAML rules, versionable in git, reviewable in PRs
 - **Fail closed** — no matching policy = denied
 - **Trace everything** — every tool call is logged with agent, params, decision, latency
