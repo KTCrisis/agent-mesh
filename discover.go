@@ -63,13 +63,19 @@ func runDiscover(args []string) {
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 
 			for _, serverCfg := range cfg.MCPServers {
-				if serverCfg.Transport != "stdio" {
+				var client *mcp.MCPClient
+				switch serverCfg.Transport {
+				case "stdio":
+					fmt.Fprintf(os.Stderr, "Connecting to MCP server: %s (%s %s)\n", serverCfg.Name, serverCfg.Command, strings.Join(serverCfg.Args, " "))
+					client = mcp.NewStdioClient(serverCfg.Name, serverCfg.Command, serverCfg.Args, serverCfg.Env)
+				case "sse":
+					fmt.Fprintf(os.Stderr, "Connecting to MCP server: %s (%s)\n", serverCfg.Name, serverCfg.URL)
+					client = mcp.NewSSEClient(serverCfg.Name, serverCfg.URL, serverCfg.Headers)
+				default:
 					fmt.Fprintf(os.Stderr, "Skipping %s (unsupported transport: %s)\n", serverCfg.Name, serverCfg.Transport)
 					continue
 				}
 
-				fmt.Fprintf(os.Stderr, "Connecting to MCP server: %s (%s %s)\n", serverCfg.Name, serverCfg.Command, strings.Join(serverCfg.Args, " "))
-				client := mcp.NewStdioClient(serverCfg.Name, serverCfg.Command, serverCfg.Args, serverCfg.Env)
 				if err := client.Connect(ctx); err != nil {
 					fmt.Fprintf(os.Stderr, "  Error: %s\n", err)
 					continue

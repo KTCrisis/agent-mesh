@@ -97,23 +97,27 @@ func main() {
 
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		for _, serverCfg := range cfg.MCPServers {
+			var client *mcp.MCPClient
 			switch serverCfg.Transport {
 			case "stdio":
-				client := mcp.NewStdioClient(serverCfg.Name, serverCfg.Command, serverCfg.Args, serverCfg.Env)
-				if err := client.Connect(ctx); err != nil {
-					slog.Error("failed to connect MCP server", "name", serverCfg.Name, "error", err)
-					continue
-				}
-				mcpManager.Add(client)
-
-				// Register discovered tools into the shared registry
-				defs := convertMCPTools(client.Tools())
-				reg.LoadMCP(serverCfg.Name, defs)
-				for _, d := range defs {
-					slog.Info("  MCP tool registered", "name", serverCfg.Name+"."+d.Name, "server", serverCfg.Name)
-				}
+				client = mcp.NewStdioClient(serverCfg.Name, serverCfg.Command, serverCfg.Args, serverCfg.Env)
+			case "sse":
+				client = mcp.NewSSEClient(serverCfg.Name, serverCfg.URL, serverCfg.Headers)
 			default:
 				slog.Error("unsupported MCP transport", "name", serverCfg.Name, "transport", serverCfg.Transport)
+				continue
+			}
+
+			if err := client.Connect(ctx); err != nil {
+				slog.Error("failed to connect MCP server", "name", serverCfg.Name, "error", err)
+				continue
+			}
+			mcpManager.Add(client)
+
+			defs := convertMCPTools(client.Tools())
+			reg.LoadMCP(serverCfg.Name, defs)
+			for _, d := range defs {
+				slog.Info("  MCP tool registered", "name", serverCfg.Name+"."+d.Name, "server", serverCfg.Name)
 			}
 		}
 		cancel()
