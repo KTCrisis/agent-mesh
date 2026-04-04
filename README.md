@@ -71,11 +71,11 @@ claude mcp add agent-mesh -- ./agent-mesh --mcp --config policies.yaml
 Now the flow becomes:
 
 ```
-Claude ──▶ agent-mesh ──▶ filesystem (read only)
-                     ├──▶ github (read, create issues — no push)
-                     └──▶ database (SELECT only — no DELETE)
-                        ↓
-                  policy · trace
+Claude --> agent-mesh --> filesystem (read only)
+                     +--> github (read, create issues - no push)
+                     +--> database (SELECT only - no DELETE)
+                        |
+                  policy . trace
 ```
 
 The agent sees a normal tool surface.
@@ -266,6 +266,42 @@ Then point your agents to `http://localhost:9090/tool/{name}`.
 curl http://localhost:9090/traces | jq
 ```
 
+### Enable / disable
+
+Agent Mesh is just an MCP server you plug in and unplug.
+
+**Enable** (for all your projects):
+
+```bash
+claude mcp add --scope user agent-mesh -- /path/to/agent-mesh --mcp --config /path/to/policies.yaml
+```
+
+**Enable** (for the current project only):
+
+```bash
+claude mcp add agent-mesh -- /path/to/agent-mesh --mcp --config /path/to/policies.yaml
+```
+
+Then restart your Claude Code session.
+
+**Disable:**
+
+```bash
+# If added with --scope user
+claude mcp remove agent-mesh -s user
+
+# If added for a specific project
+claude mcp remove agent-mesh -s local
+```
+
+**Check status:**
+
+```bash
+claude mcp list
+```
+
+The binary and config stay on disk. You are only connecting or disconnecting the proxy.
+
 ## The 3 modes
 
 Agent Mesh has three composable operations:
@@ -274,18 +310,18 @@ Agent Mesh has three composable operations:
 ┌─────────────────────────────────────────────────────────┐
 │                     agent-mesh                          │
 │                                                         │
-│  ┌──���──────────┐     ┌──────────┐     ┌───��─────────┐  │
+│  ┌─────────────┐     ┌──────────┐     ┌─────────────┐  │
 │  │ IMPORT      │     │          │     │ EXPORT      │  │
-��  │ OpenAPI     │────▶│ Registry ���────▶│ MCP server  │  │
+│  │ OpenAPI     │────>│ Registry │────>│ MCP server  │  │
 │  │ (Swagger)   │     │ (tools)  │     │ (stdio)     │  │
 │  └─────────────┘     │          │     └──────┬──────┘  │
-│  ┌────────────��┐     │          │            │         │
-│  │ IMPORT      │────▶│          │            ▼         │
+│  ┌─────────────┐     │          │            │         │
+│  │ IMPORT      │────>│          │            v         │
 │  │ MCP servers │     │          │     Claude, Cursor,  │
 │  │ (upstream)  │     └──────────┘     any MCP client   │
-│  └───────��─────┘          │                            │
+│  └─────────────┘          │                            │
 │                     policy · trace                      │
-└────���────────────────────────────────────────────────────┘
+└─────────────────────────────────────────────────────────┘
 ```
 
 ### 1. Import OpenAPI
@@ -581,25 +617,25 @@ Supported operators: `<`, `<=`, `>`, `>=`, `==`, `!=`
 
 ```
 agent-mesh/
-├── main.go                # Entry point, wires everything
-├── discover.go            # Discover subcommand
-├── config/
-│   └── config.go          # YAML config + policy + MCP server definitions
-├── registry/
-│   ├── registry.go        # Tool/Param types, Registry (Get/All/Remove)
-│   ├── openapi.go         # Import OpenAPI → tool catalog
-│   └── mcp.go             # Import MCP → tool catalog
-├─��� policy/
-│   └── engine.go          # Rule evaluation engine
-���── proxy/
-│   └── handler.go         # HTTP proxy (auth → policy → forward → trace)
-├── mcp/
-│   ├── server.go          # Export MCP (stdio JSON-RPC server)
-│   ├── client.go          # Import MCP (connect to upstream servers)
-│   └── manager.go         # Manages N upstream MCP connections
-├── trace/
-│   └─�� store.go           # In-memory trace store
-└── policies.yaml          # Example policies
+|-- main.go                # Entry point, wires everything
+|-- discover.go            # Discover subcommand
+|-- config/
+|   +-- config.go          # YAML config + policy + MCP server definitions
+|-- registry/
+|   |-- registry.go        # Tool/Param types, Registry (Get/All/Remove)
+|   |-- openapi.go         # Import OpenAPI -> tool catalog
+|   +-- mcp.go             # Import MCP -> tool catalog
+|-- policy/
+|   +-- engine.go          # Rule evaluation engine
+|-- proxy/
+|   +-- handler.go         # HTTP proxy (auth -> policy -> forward -> trace)
+|-- mcp/
+|   |-- server.go          # Export MCP (stdio JSON-RPC server)
+|   |-- client.go          # Import MCP (connect to upstream servers)
+|   +-- manager.go         # Manages N upstream MCP connections
+|-- trace/
+|   +-- store.go           # In-memory trace store
++-- policies.yaml          # Example policies
 ```
 
 ## Tests

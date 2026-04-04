@@ -1,0 +1,67 @@
+port: 9090
+
+mcp_servers:
+  - name: filesystem
+    transport: stdio
+    command: npx
+    args: ["-y", "@modelcontextprotocol/server-filesystem", "/home/fluxart"]
+
+  # Uncomment when GITHUB_TOKEN is set:
+  # - name: github
+  #   transport: stdio
+  #   command: npx
+  #   args: ["-y", "@modelcontextprotocol/server-github"]
+  #   env:
+  #     GITHUB_PERSONAL_ACCESS_TOKEN: "${GITHUB_TOKEN}"
+
+policies:
+  - name: claude
+    agent: "claude"
+    rules:
+      # Filesystem — read operations
+      - tools:
+          [
+            "filesystem.directory_tree",
+            "filesystem.get_file_info",
+            "filesystem.list_allowed_directories",
+            "filesystem.list_directory",
+            "filesystem.list_directory_with_sizes",
+            "filesystem.read_file",
+            "filesystem.read_media_file",
+            "filesystem.read_multiple_files",
+            "filesystem.read_text_file",
+            "filesystem.search_files",
+          ]
+        action: allow
+
+      # Filesystem — write operations (block by default)
+      - tools:
+          [
+            "filesystem.create_directory",
+            "filesystem.edit_file",
+            "filesystem.move_file",
+            "filesystem.write_file",
+          ]
+        action: deny
+
+      # GitHub — read operations (uncomment with github MCP server)
+      # - tools: ["github.list_issues", "github.get_issue", "github.search_repos",
+      #           "github.get_pull_request", "github.list_pull_requests",
+      #           "github.get_file_contents", "github.list_commits"]
+      #   action: allow
+
+      # GitHub — write operations (needs approval)
+      # - tools: ["github.create_issue", "github.create_pull_request",
+      #           "github.add_issue_comment"]
+      #   action: human_approval
+
+      # GitHub — dangerous operations
+      # - tools: ["github.push_files", "github.merge_pull_request",
+      #           "github.delete_repository"]
+      #   action: deny
+
+  - name: default
+    agent: "*"
+    rules:
+      - tools: ["*"]
+        action: deny
