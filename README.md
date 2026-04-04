@@ -140,7 +140,24 @@ Think of it as **ESLint for agent actions** — lightweight, runs locally, confi
 go build -o agent-mesh .
 ```
 
-### 2. Write a policy
+### 2. Discover tools and generate a policy
+
+Don't know the tool names? Use `discover` to connect to your MCP servers, list all tools, and generate a starter policy:
+
+```bash
+# List all tools from an MCP server
+./agent-mesh discover --config policies.yaml
+
+# Generate a ready-to-use policy (read-only by default)
+./agent-mesh discover --config policies.yaml --generate-policy
+
+# Discover tools from an OpenAPI spec
+./agent-mesh discover --openapi https://petstore.swagger.io/v2/swagger.json --generate-policy
+```
+
+The `discover` command connects, lists tools with descriptions, and classifies them as read or write operations. You can copy the generated policy into your `policies.yaml` and adjust.
+
+### 3. Write a policy (or use the generated one)
 
 ```yaml
 # policies.yaml
@@ -160,7 +177,7 @@ policies:
         action: deny
 ```
 
-### 3. Plug into your agent
+### 4. Plug into your agent
 
 **Claude Code:**
 ```bash
@@ -176,7 +193,7 @@ claude mcp add agent-mesh -- ./agent-mesh --mcp --config policies.yaml
 # Agents call http://localhost:9090/tool/{name} instead of the real backend
 ```
 
-### 4. See what happened
+### 5. See what happened
 
 ```bash
 curl http://localhost:9090/traces | jq
@@ -539,7 +556,13 @@ Coverage (49 tests):
 | `trace` | 6 | record, filters, limit, eviction, stats |
 | `mcp` | 13 | client lifecycle, timeouts, goroutine cleanup, manager concurrent access |
 
-## CLI flags
+## CLI
+
+### Main command
+
+```bash
+./agent-mesh [flags]
+```
 
 | Flag | Default | Description |
 |------|---------|-------------|
@@ -550,10 +573,24 @@ Coverage (49 tests):
 | `--mcp` | `false` | Export MCP mode (stdio JSON-RPC server) |
 | `--mcp-agent` | `claude` | Agent ID for MCP mode policy evaluation |
 
+### Discover command
+
+```bash
+./agent-mesh discover [flags]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--config` | | Config YAML with MCP servers to discover |
+| `--openapi` | | OpenAPI spec URL to discover |
+| `--backend` | | Backend base URL (overrides spec) |
+| `--generate-policy` | `false` | Generate a suggested policy (read-only defaults) |
+
 ## Roadmap
 
 - [x] Import OpenAPI (REST API → governed tools)
 - [x] Import MCP (upstream MCP servers → governed tools)
+- [x] Discover command with policy generation
 - [x] Export MCP (expose tools as MCP server)
 - [x] Policy engine (allow/deny/human_approval + conditions)
 - [x] Trace store with query API

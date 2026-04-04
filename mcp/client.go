@@ -246,7 +246,9 @@ func (c *MCPClient) readLoop() {
 	for {
 		line, err := c.stdout.ReadBytes('\n')
 		if err != nil {
-			if err != io.EOF {
+			// Don't log errors when we're shutting down intentionally
+			status, _ := c.Status()
+			if err != io.EOF && status != "closed" {
 				slog.Error("MCP client: read error", "server", c.Name, "error", err)
 			}
 			c.setStatus("error", "connection lost")

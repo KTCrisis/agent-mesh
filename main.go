@@ -20,6 +20,12 @@ import (
 )
 
 func main() {
+	// Subcommand: discover
+	if len(os.Args) > 1 && os.Args[1] == "discover" {
+		runDiscover(os.Args[2:])
+		return
+	}
+
 	configPath := flag.String("config", "policies.yaml", "Path to config/policies YAML")
 	specURL := flag.String("openapi", "", "OpenAPI spec URL to load")
 	backendURL := flag.String("backend", "", "Backend base URL (overrides spec)")
