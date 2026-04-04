@@ -319,6 +319,10 @@ func (c *MCPClient) parseTools(result any) error {
 func (c *MCPClient) setStatus(status, errMsg string) {
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()
+	// Once closed, status is final — don't allow readLoop to overwrite it
+	if c.status == "closed" {
+		return
+	}
 	c.status = status
 	c.lastError = errMsg
 }

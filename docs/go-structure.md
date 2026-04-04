@@ -2,6 +2,26 @@
 
 Ce document explique comment le code Go est organisé, pour quelqu'un qui ne connaît pas le langage.
 
+## Les 3 opérations d'Agent Mesh
+
+Avant de plonger dans le code, il faut comprendre les 3 opérations distinctes :
+
+| Opération | Direction | Ce que ça fait | Code |
+|-----------|-----------|---------------|------|
+| **Import OpenAPI** | Swagger → registry | Parse une spec OpenAPI, enregistre les endpoints comme tools | `registry/openapi.go` |
+| **Import MCP** | MCP servers → registry | Se connecte à des MCP servers, découvre et enregistre leurs tools | `mcp/client.go` + `registry/mcp.go` |
+| **Export MCP** | registry → MCP client | Expose tous les tools (peu importe leur source) comme un MCP server | `mcp/server.go` |
+
+```
+Import OpenAPI ──▶ ┌──────────┐ ──▶ HTTP proxy (agents HTTP)
+                   │ Registry  │
+Import MCP     ──▶ │ (tools)   │ ──▶ Export MCP (Claude, Cursor)
+                   └─────┬─────┘
+                   policy · trace
+```
+
+Ces 3 opérations sont **combinables** : on peut importer depuis un Swagger ET des MCP servers, puis re-exporter le tout comme MCP pour Claude.
+
 ## Concepts Go de base
 
 ### Package = dossier
@@ -102,8 +122,8 @@ agent-mesh/
 │   └── config_test.go
 ├── registry/
 │   ├── registry.go            # Types partagés + Registry CRUD
-│   ├── openapi.go             # Chargement depuis OpenAPI
-│   ├── mcp.go                 # Chargement depuis MCP
+│   ├── openapi.go             # Import OpenAPI (Swagger → tools)
+│   ├── mcp.go                 # Import MCP (MCP tools → registry)
 │   └── registry_test.go
 ├── policy/
 │   ├── engine.go              # Moteur d'évaluation des règles
@@ -112,9 +132,9 @@ agent-mesh/
 │   ├── handler.go             # Handler HTTP + interface MCPForwarder
 │   └── handler_test.go
 ├── mcp/
-│   ├── server.go              # Types JSON-RPC + MCP server (downstream)
-│   ├── client.go              # MCP client (upstream)
-│   ├── manager.go             # Gère N clients
+│   ├── server.go              # Export MCP (expose tools via stdio JSON-RPC)
+│   ├── client.go              # Import MCP (connexion aux MCP servers upstream)
+│   ├── manager.go             # Gère N connexions Import MCP
 │   ├── client_test.go
 │   └── manager_test.go
 ├── trace/
@@ -219,9 +239,9 @@ Param
 
 ---
 
-### `registry/openapi.go` — Chargement OpenAPI
+### `registry/openapi.go` — Import OpenAPI
 
-Télécharge une spec OpenAPI (Swagger), la parse, et enregistre chaque endpoint comme un `Tool`.
+Télécharge une spec OpenAPI (Swagger), la parse, et enregistre chaque endpoint comme un `Tool`. C'est l'opération **Import OpenAPI**.
 
 ```
 GET /pet/{petId}  →  Tool{ Name: "get_pet_by_id", Method: "GET", Path: "/pet/{petId}" }
@@ -236,9 +256,9 @@ POST /pet         →  Tool{ Name: "add_pet", Method: "POST", Path: "/pet" }
 
 ---
 
-### `registry/mcp.go` — Chargement MCP
+### `registry/mcp.go` — Import MCP (côté registry)
 
-Enregistre les tools découverts depuis un serveur MCP upstream.
+Enregistre les tools découverts depuis un serveur MCP upstream dans le registry. C'est la partie "enregistrement" de l'opération **Import MCP** (la connexion est dans `mcp/client.go`).
 
 **Types :**
 
@@ -346,9 +366,9 @@ handleToolCall
 
 ---
 
-### `mcp/server.go` — MCP Server (downstream)
+### `mcp/server.go` — Export MCP
 
-Agent-mesh **expose** ses tools comme un serveur MCP. Communique via stdin/stdout en JSON-RPC.
+C'est l'opération **Export MCP** : agent-mesh expose tous les tools du registry comme un serveur MCP. Communique via stdin/stdout en JSON-RPC. C'est ce qui permet à Claude ou Cursor de consommer des APIs REST sans les connaître.
 
 **Types partagés (utilisés aussi par client.go) :**
 
@@ -392,9 +412,9 @@ ping                  → pong
 
 ---
 
-### `mcp/client.go` — MCP Client (upstream)
+### `mcp/client.go` — Import MCP (côté connexion)
 
-Agent-mesh **se connecte** à des serveurs MCP en amont via stdio.
+C'est la partie "connexion" de l'opération **Import MCP** : agent-mesh se connecte à des serveurs MCP en amont via stdio, fait le handshake, et découvre leurs tools.
 
 **Type :**
 
