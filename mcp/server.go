@@ -64,12 +64,16 @@ type Server struct {
 	AgentID  string // agent ID for policy evaluation in MCP mode
 }
 
-// Run starts the MCP server, reading JSON-RPC from stdin and writing to stdout.
+// Run starts the MCP server on stdin/stdout.
 func (s *Server) Run() error {
+	return s.Serve(os.Stdin, os.Stdout)
+}
+
+// Serve runs the MCP server on the given reader/writer.
+func (s *Server) Serve(r io.Reader, w io.Writer) error {
 	slog.Info("MCP server starting", "agent", s.AgentID, "tools", len(s.Registry.All()))
 
-	reader := bufio.NewReader(os.Stdin)
-	writer := os.Stdout
+	reader := bufio.NewReader(r)
 
 	for {
 		line, err := reader.ReadBytes('\n')
@@ -83,7 +87,7 @@ func (s *Server) Run() error {
 
 		var req rpcRequest
 		if err := json.Unmarshal(line, &req); err != nil {
-			s.writeError(writer, nil, -32700, "Parse error")
+			s.writeError(w, nil, -32700, "Parse error")
 			continue
 		}
 
@@ -109,7 +113,7 @@ func (s *Server) Run() error {
 			resp.Error = &rpcError{Code: -32601, Message: fmt.Sprintf("Method not found: %s", req.Method)}
 		}
 
-		s.writeResponse(writer, resp)
+		s.writeResponse(w, resp)
 	}
 }
 

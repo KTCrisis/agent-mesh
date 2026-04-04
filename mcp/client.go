@@ -17,7 +17,8 @@ type MCPClient struct {
 	Transport string // "stdio" or "sse"
 
 	// transport layer
-	tr transport
+	tr        transport
+	newTr     func() transport // factory to create a fresh transport for reconnection
 
 	// state
 	stateMu   sync.Mutex
@@ -32,10 +33,12 @@ type MCPClient struct {
 
 // NewStdioClient creates an MCP client that communicates via stdin/stdout of a subprocess.
 func NewStdioClient(name, command string, args []string, env map[string]string) *MCPClient {
+	factory := func() transport { return newStdioTransport(name, command, args, env) }
 	return &MCPClient{
 		Name:      name,
 		Transport: "stdio",
-		tr:        newStdioTransport(name, command, args, env),
+		tr:        factory(),
+		newTr:     factory,
 		pending:   make(map[int64]chan rpcResponse),
 		status:    "connecting",
 		done:      make(chan struct{}),
@@ -44,10 +47,12 @@ func NewStdioClient(name, command string, args []string, env map[string]string) 
 
 // NewSSEClient creates an MCP client that communicates via HTTP SSE.
 func NewSSEClient(name, sseURL string, headers map[string]string) *MCPClient {
+	factory := func() transport { return newSSETransport(name, sseURL, headers) }
 	return &MCPClient{
 		Name:      name,
 		Transport: "sse",
-		tr:        newSSETransport(name, sseURL, headers),
+		tr:        factory(),
+		newTr:     factory,
 		pending:   make(map[int64]chan rpcResponse),
 		status:    "connecting",
 		done:      make(chan struct{}),
@@ -56,6 +61,14 @@ func NewSSEClient(name, sseURL string, headers map[string]string) *MCPClient {
 
 // Connect starts the transport, performs the MCP initialize handshake, and discovers tools.
 func (c *MCPClient) Connect(ctx context.Context) error {
+	if err := c.connectInternal(ctx); err != nil {
+		c.Close()
+		return err
+	}
+	return nil
+}
+
+func (c *MCPClient) connectInternal(ctx context.Context) error {
 	if err := c.tr.Start(); err != nil {
 		c.setStatus("error", err.Error())
 		return fmt.Errorf("start transport: %w", err)
@@ -74,7 +87,6 @@ func (c *MCPClient) Connect(ctx context.Context) error {
 		},
 	})
 	if err != nil {
-		c.Close()
 		return fmt.Errorf("initialize: %w", err)
 	}
 	slog.Info("MCP client: initialized", "server", c.Name, "result", initResp.Result)
@@ -84,19 +96,16 @@ func (c *MCPClient) Connect(ctx context.Context) error {
 		JSONRPC: "2.0",
 		Method:  "notifications/initialized",
 	}); err != nil {
-		c.Close()
 		return fmt.Errorf("send initialized notification: %w", err)
 	}
 
 	// Discover tools
 	toolsResp, err := c.send(ctx, "tools/list", nil)
 	if err != nil {
-		c.Close()
 		return fmt.Errorf("tools/list: %w", err)
 	}
 
 	if err := c.parseTools(toolsResp.Result); err != nil {
-		c.Close()
 		return fmt.Errorf("parse tools: %w", err)
 	}
 
@@ -140,6 +149,15 @@ func (c *MCPClient) CallTool(ctx context.Context, name string, arguments map[str
 func (c *MCPClient) Close() error {
 	c.setStatus("closed", "")
 	c.failAllPending("client closed")
+
+	// Signal done to unblock any send() calls
+	select {
+	case <-c.done:
+		// already closed
+	default:
+		close(c.done)
+	}
+
 	return c.tr.Close()
 }
 
@@ -188,9 +206,6 @@ func (c *MCPClient) writeRequest(req rpcRequest) error {
 }
 
 func (c *MCPClient) readLoop() {
-	defer close(c.done)
-	defer c.failAllPending("connection lost")
-
 	c.tr.ReadLoop(func(data []byte) {
 		var resp rpcResponse
 		if err := json.Unmarshal(data, &resp); err != nil {
@@ -216,8 +231,58 @@ func (c *MCPClient) readLoop() {
 		}
 	})
 
-	// ReadLoop exited — mark as error unless already closed
+	// ReadLoop exited — try to reconnect unless intentionally closed
+	status, _ := c.Status()
+	if status == "closed" {
+		return
+	}
 	c.setStatus("error", "connection lost")
+	c.failAllPending("connection lost")
+
+	// Attempt reconnection with exponential backoff
+	go c.reconnectLoop()
+}
+
+// reconnectLoop attempts to reconnect with exponential backoff.
+func (c *MCPClient) reconnectLoop() {
+	backoff := 1 * time.Second
+	maxBackoff := 30 * time.Second
+
+	for attempt := 1; ; attempt++ {
+		status, _ := c.Status()
+		if status == "closed" {
+			return
+		}
+
+		slog.Info("MCP client: reconnecting", "server", c.Name, "attempt", attempt, "backoff", backoff)
+		time.Sleep(backoff)
+
+		// Check again after sleep
+		status, _ = c.Status()
+		if status == "closed" {
+			return
+		}
+
+		// Create fresh transport and try to connect
+		c.tr.Close()
+		c.tr = c.newTr()
+		c.done = make(chan struct{})
+
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		err := c.connectInternal(ctx)
+		cancel()
+
+		if err == nil {
+			slog.Info("MCP client: reconnected", "server", c.Name, "attempt", attempt)
+			return
+		}
+
+		slog.Warn("MCP client: reconnect failed", "server", c.Name, "attempt", attempt, "error", err)
+		backoff *= 2
+		if backoff > maxBackoff {
+			backoff = maxBackoff
+		}
+	}
 }
 
 // failAllPending drains all pending request channels with an error response.

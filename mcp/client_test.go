@@ -30,12 +30,10 @@ func TestConnectBadCommand(t *testing.T) {
 		t.Fatal("expected error for nonexistent binary")
 	}
 
-	status, lastErr := c.Status()
-	if status != "error" {
-		t.Errorf("status = %q, want error", status)
-	}
-	if lastErr == "" {
-		t.Error("lastError should be set")
+	// Connect calls Close() on failure, so status is "closed"
+	status, _ := c.Status()
+	if status != "closed" {
+		t.Errorf("status = %q, want closed", status)
 	}
 }
 

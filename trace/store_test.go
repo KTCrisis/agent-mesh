@@ -199,6 +199,34 @@ func TestPersistentStoreNewFile(t *testing.T) {
 	}
 }
 
+func TestPersistentStoreRotation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "traces.jsonl")
+
+	s, _ := NewPersistentStore(10000, path)
+	s.maxFileSize = 500 // rotate after 500 bytes
+
+	// Write entries until rotation triggers
+	for i := 0; i < 20; i++ {
+		s.Record(Entry{AgentID: "bot", Tool: "tool_with_long_name", Policy: "allow"})
+	}
+	s.Close()
+
+	// The .old file should exist
+	oldPath := path + ".old"
+	if _, err := os.Stat(oldPath); os.IsNotExist(err) {
+		t.Fatal("rotated .old file should exist")
+	}
+
+	// Current file should be smaller than max
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if info.Size() > 500 {
+		t.Errorf("current file size = %d, should be < 500 after rotation", info.Size())
+	}
+}
+
 func TestCloseIdempotent(t *testing.T) {
 	s := NewStore(100)
 	// Close on in-memory store should not panic

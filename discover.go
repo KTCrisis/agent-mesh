@@ -207,7 +207,7 @@ func isReadTool(t *registry.Tool) bool {
 	}
 	name := strings.ToLower(t.Name)
 	readPrefixes := []string{"get_", "list_", "find_", "search_", "read_", "describe_", "show_", "fetch_", "query_"}
-	readContains := []string{".read_", ".list_", ".get_", ".find_", ".search_", ".describe_", ".show_", ".fetch_", ".query_", ".directory_tree", ".get_file_info", ".list_allowed"}
+	readContains := []string{".read_", ".list_", ".get_", ".find_", ".search_", ".describe_", ".show_", ".fetch_", ".query_", ".directory_tree", ".get_file_info", ".list_allowed", "_read_", "_list_", "_get_", "_find_", "_search_", "_fetch_", "_query_"}
 	for _, p := range readPrefixes {
 		if strings.HasPrefix(name, p) {
 			return true

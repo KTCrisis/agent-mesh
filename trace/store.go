@@ -32,8 +32,11 @@ type Store struct {
 	maxSize int
 
 	// JSONL file persistence (nil = in-memory only)
-	file   *os.File
-	writer *bufio.Writer
+	file        *os.File
+	writer      *bufio.Writer
+	filePath    string
+	fileSize    int64
+	maxFileSize int64 // 0 = no rotation
 }
 
 // NewStore creates an in-memory trace store.
@@ -49,24 +52,39 @@ func NewStore(maxSize int) *Store {
 
 // NewPersistentStore creates a trace store that appends to a JSONL file.
 // Existing entries are loaded from the file on startup.
+// maxFileBytes controls file rotation (0 = no rotation, default 10MB).
 func NewPersistentStore(maxSize int, path string) (*Store, error) {
 	s := NewStore(maxSize)
+	s.filePath = path
+	s.maxFileSize = 10 * 1024 * 1024 // 10MB default
 
 	// Load existing entries from file
 	if err := s.loadFromFile(path); err != nil {
 		slog.Warn("trace: could not load existing traces", "path", path, "error", err)
-		// Not fatal — start fresh
 	}
 
 	// Open file for appending
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-	if err != nil {
+	if err := s.openFile(); err != nil {
 		return nil, err
+	}
+
+	return s, nil
+}
+
+func (s *Store) openFile() error {
+	f, err := os.OpenFile(s.filePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return err
+	}
+	info, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return err
 	}
 	s.file = f
 	s.writer = bufio.NewWriter(f)
-
-	return s, nil
+	s.fileSize = info.Size()
+	return nil
 }
 
 // Record adds a trace entry.
@@ -95,9 +113,15 @@ func (s *Store) Record(e Entry) {
 			slog.Error("trace: failed to marshal entry", "error", err)
 			return
 		}
-		s.writer.Write(data)
+		n, _ := s.writer.Write(data)
 		s.writer.WriteByte('\n')
 		s.writer.Flush()
+		s.fileSize += int64(n + 1)
+
+		// Rotate if file exceeds max size
+		if s.maxFileSize > 0 && s.fileSize >= s.maxFileSize {
+			s.rotate()
+		}
 	}
 }
 
@@ -151,6 +175,30 @@ func (s *Store) Stats() map[string]int {
 		}
 	}
 	return stats
+}
+
+// rotate renames the current file to .old and opens a new one.
+// Must be called with mu held.
+func (s *Store) rotate() {
+	if s.writer != nil {
+		s.writer.Flush()
+	}
+	if s.file != nil {
+		s.file.Close()
+	}
+
+	oldPath := s.filePath + ".old"
+	os.Remove(oldPath)
+	if err := os.Rename(s.filePath, oldPath); err != nil {
+		slog.Error("trace: failed to rotate file", "error", err)
+		return
+	}
+
+	slog.Info("trace: rotated", "old", oldPath, "new", s.filePath)
+
+	if err := s.openFile(); err != nil {
+		slog.Error("trace: failed to reopen after rotation", "error", err)
+	}
 }
 
 // Close flushes and closes the trace file.
