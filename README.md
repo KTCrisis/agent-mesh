@@ -219,11 +219,22 @@ The `discover` command:
 ### 3. Write a policy
 
 ```yaml
+# Persist traces to a file (optional — omit for in-memory only)
+trace_file: /path/to/traces.jsonl
+
 mcp_servers:
+  # Local MCP server (stdio)
   - name: filesystem
     transport: stdio
     command: npx
     args: ["-y", "@modelcontextprotocol/server-filesystem", "/home/me/projects"]
+
+  # Remote MCP server (SSE) — Gmail, hosted services, etc.
+  # - name: gmail
+  #   transport: sse
+  #   url: "https://some-mcp-server.com/sse"
+  #   headers:
+  #     Authorization: "Bearer <token>"
 
 policies:
   - name: safe-mode
@@ -263,7 +274,17 @@ Then point your agents to `http://localhost:9090/tool/{name}`.
 ### 5. Inspect traces
 
 ```bash
+# HTTP mode — query the API
 curl http://localhost:9090/traces | jq
+
+# From the JSONL file (works in both HTTP and MCP mode)
+cat traces.jsonl | jq
+
+# Filter: only denied calls
+cat traces.jsonl | jq 'select(.policy == "deny")'
+
+# Filter: only Gmail
+cat traces.jsonl | jq 'select(.tool | startswith("gmail."))'
 ```
 
 ### Enable / disable
@@ -355,7 +376,7 @@ curl -X POST http://localhost:9090/tool/delete_pet \
 
 ### 2. Import MCP
 
-Connect to upstream MCP servers, discover their tools, and add governance on top.
+Connect to upstream MCP servers, discover their tools, and add governance on top. Supports both **stdio** (local subprocess) and **SSE** (remote HTTP) transports.
 
 **Use case:** you already use MCP servers, but need policy control and tracing.
 
@@ -363,10 +384,18 @@ Connect to upstream MCP servers, discover their tools, and add governance on top
 port: 9090
 
 mcp_servers:
+  # Local MCP server via stdio
   - name: filesystem
     transport: stdio
     command: npx
     args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+
+  # Remote MCP server via SSE (uncomment to use)
+  # - name: remote-service
+  #   transport: sse
+  #   url: "https://mcp-server.example.com/sse"
+  #   headers:
+  #     Authorization: "Bearer <token>"
 
 policies:
   - name: allow-reads
@@ -650,16 +679,16 @@ go test ./proxy/ -v                                    # Run one package
 go test ./policy/ -run TestEvaluateMCPNamespacedTools -v  # Run one test
 ```
 
-Coverage (49 tests):
+Coverage (57 tests):
 
 | Package | Tests | Covers |
 |---------|-------|--------|
 | `config` | 5 | YAML parsing, defaults, MCP servers, conditions |
 | `registry` | 10 | CRUD, loading, namespacing, mixed sources, concurrent access |
 | `policy` | 8 | Allow/deny, conditions, wildcards, fail-closed behavior |
-| `proxy` | 17 | REST and MCP calls, deny/error/approval flows, endpoints |
-| `trace` | 6 | Record, filter, limit, eviction, stats |
-| `mcp` | 13 | Client lifecycle, timeouts, cleanup, concurrent manager access |
+| `proxy` | 17 | REST and MCP calls, deny/error/approval flows, URL encoding |
+| `trace` | 11 | Record, filter, eviction, stats, JSONL persistence, reload, append |
+| `mcp` | 16 | Client lifecycle, timeouts, cleanup, SSE transport, concurrent access |
 
 ## Roadmap
 
@@ -671,14 +700,15 @@ Coverage (49 tests):
 - [x] `/mcp-servers` endpoint
 - [x] Graceful shutdown
 - [x] Discover command with policy generation
-- [ ] SSE transport for Import MCP
+- [x] Persistent traces (JSONL file)
+- [x] SSE transport for Import MCP (remote MCP servers)
 - [ ] Agent credential format (JWT with scopes and budget)
+- [ ] Richer policy expressions (regex, contains, in-list)
 - [ ] AsyncAPI support
-- [ ] OpenTelemetry export
+- [ ] OpenTelemetry trace export
 - [ ] Rate limiting per agent
 - [ ] Cost tracking / token budget enforcement
 - [ ] Dashboard UI
-- [ ] Persistent trace store (PostgreSQL)
 
 ## License
 
