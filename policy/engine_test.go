@@ -1,0 +1,135 @@
+package policy
+
+import (
+	"testing"
+
+	"github.com/KTCrisis/agent-mesh/config"
+)
+
+func testEngine() *Engine {
+	return NewEngine([]config.Policy{
+		{
+			Name:  "support",
+			Agent: "support-*",
+			Rules: []config.Rule{
+				{Tools: []string{"get_order", "get_customer"}, Action: "allow"},
+				{Tools: []string{"create_refund"}, Action: "allow", Condition: &config.Condition{
+					Field: "params.amount", Operator: "<", Value: 500,
+				}},
+				{Tools: []string{"create_refund"}, Action: "deny", Condition: &config.Condition{
+					Field: "params.amount", Operator: ">=", Value: 500,
+				}},
+				{Tools: []string{"delete_customer"}, Action: "deny"},
+			},
+		},
+		{
+			Name:  "admin",
+			Agent: "admin-*",
+			Rules: []config.Rule{
+				{Tools: []string{"*"}, Action: "allow"},
+			},
+		},
+		{
+			Name:  "default",
+			Agent: "*",
+			Rules: []config.Rule{
+				{Tools: []string{"*"}, Action: "deny"},
+			},
+		},
+	})
+}
+
+func TestEvaluateAllow(t *testing.T) {
+	e := testEngine()
+	d := e.Evaluate("support-bot", "get_order", nil)
+	if d.Action != "allow" {
+		t.Errorf("action = %q, want allow", d.Action)
+	}
+	if d.Rule != "support" {
+		t.Errorf("rule = %q, want support", d.Rule)
+	}
+}
+
+func TestEvaluateDeny(t *testing.T) {
+	e := testEngine()
+	d := e.Evaluate("support-bot", "delete_customer", nil)
+	if d.Action != "deny" {
+		t.Errorf("action = %q, want deny", d.Action)
+	}
+}
+
+func TestEvaluateConditionAllow(t *testing.T) {
+	e := testEngine()
+	d := e.Evaluate("support-bot", "create_refund", map[string]any{
+		"params": map[string]any{"amount": 100.0},
+	})
+	if d.Action != "allow" {
+		t.Errorf("action = %q, want allow (amount < 500)", d.Action)
+	}
+}
+
+func TestEvaluateConditionDeny(t *testing.T) {
+	e := testEngine()
+	d := e.Evaluate("support-bot", "create_refund", map[string]any{
+		"params": map[string]any{"amount": 999.0},
+	})
+	if d.Action != "deny" {
+		t.Errorf("action = %q, want deny (amount >= 500)", d.Action)
+	}
+}
+
+func TestEvaluateWildcardAgent(t *testing.T) {
+	e := testEngine()
+	d := e.Evaluate("admin-1", "delete_customer", nil)
+	if d.Action != "allow" {
+		t.Errorf("action = %q, want allow (admin wildcard)", d.Action)
+	}
+}
+
+func TestEvaluateDefaultDeny(t *testing.T) {
+	e := testEngine()
+	d := e.Evaluate("random-agent", "get_order", nil)
+	if d.Action != "deny" {
+		t.Errorf("action = %q, want deny (default policy)", d.Action)
+	}
+}
+
+func TestEvaluateNoMatchFailClosed(t *testing.T) {
+	e := NewEngine([]config.Policy{})
+	d := e.Evaluate("anyone", "anything", nil)
+	if d.Action != "deny" {
+		t.Errorf("action = %q, want deny (fail closed)", d.Action)
+	}
+	if d.Rule != "default" {
+		t.Errorf("rule = %q, want default", d.Rule)
+	}
+}
+
+func TestEvaluateMCPNamespacedTools(t *testing.T) {
+	e := NewEngine([]config.Policy{
+		{
+			Name:  "mcp-policy",
+			Agent: "claude",
+			Rules: []config.Rule{
+				{Tools: []string{"filesystem.read_file", "filesystem.list_directory"}, Action: "allow"},
+				{Tools: []string{"filesystem.write_file"}, Action: "deny"},
+			},
+		},
+	})
+
+	d := e.Evaluate("claude", "filesystem.read_file", nil)
+	if d.Action != "allow" {
+		t.Errorf("action = %q, want allow", d.Action)
+	}
+
+	d = e.Evaluate("claude", "filesystem.write_file", nil)
+	if d.Action != "deny" {
+		t.Errorf("action = %q, want deny", d.Action)
+	}
+
+	// Not in policy → fail closed
+	d = e.Evaluate("claude", "filesystem.delete_file", nil)
+	if d.Action != "deny" {
+		t.Errorf("action = %q, want deny (not listed)", d.Action)
+	}
+}
