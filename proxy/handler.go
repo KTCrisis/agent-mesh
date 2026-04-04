@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -29,12 +30,19 @@ type ToolCallResponse struct {
 	Error     string `json:"error,omitempty"`
 }
 
+// MCPForwarder is the interface for forwarding calls to upstream MCP servers.
+type MCPForwarder interface {
+	CallTool(ctx context.Context, serverName string, toolName string, arguments map[string]any) (any, error)
+	ServerStatuses() any
+}
+
 // Handler is the HTTP handler for the sidecar proxy.
 type Handler struct {
-	Registry *registry.Registry
-	Policy   *policy.Engine
-	Traces   *trace.Store
-	Client   *http.Client
+	Registry   *registry.Registry
+	Policy     *policy.Engine
+	Traces     *trace.Store
+	Client       *http.Client
+	MCPForwarder MCPForwarder
 }
 
 func NewHandler(reg *registry.Registry, pol *policy.Engine, traces *trace.Store) *Handler {
@@ -55,6 +63,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleListTools(w, r)
 	case r.Method == "GET" && r.URL.Path == "/traces":
 		h.handleTraces(w, r)
+	case r.Method == "GET" && r.URL.Path == "/mcp-servers":
+		h.handleMCPServers(w, r)
 	case r.Method == "GET" && r.URL.Path == "/health":
 		h.handleHealth(w, r)
 	default:
@@ -158,8 +168,16 @@ func (h *Handler) handleToolCall(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, resp)
 }
 
-// Forward sends the actual request to the backend API.
+// Forward sends the request to the appropriate backend (HTTP or MCP).
 func (h *Handler) Forward(tool *registry.Tool, params map[string]any) (any, int, error) {
+	if tool.Source == "mcp" {
+		return h.forwardMCP(tool, params)
+	}
+	return h.forwardHTTP(tool, params)
+}
+
+// forwardHTTP sends the request to a REST backend.
+func (h *Handler) forwardHTTP(tool *registry.Tool, params map[string]any) (any, int, error) {
 	// Build URL with path params
 	url := tool.BaseURL + tool.Path
 	for k, v := range params {
@@ -215,6 +233,23 @@ func (h *Handler) Forward(tool *registry.Tool, params map[string]any) (any, int,
 	return result, resp.StatusCode, nil
 }
 
+// forwardMCP forwards the call to an upstream MCP server.
+func (h *Handler) forwardMCP(tool *registry.Tool, params map[string]any) (any, int, error) {
+	if h.MCPForwarder == nil {
+		return nil, 0, fmt.Errorf("no MCP forwarder configured")
+	}
+
+	// Strip namespace prefix to get the original tool name
+	originalName := strings.TrimPrefix(tool.Name, tool.MCPServer+".")
+
+	ctx := context.Background()
+	result, err := h.MCPForwarder.CallTool(ctx, tool.MCPServer, originalName, params)
+	if err != nil {
+		return nil, 502, err
+	}
+	return result, 200, nil
+}
+
 func (h *Handler) handleListTools(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, 200, h.Registry.All())
 }
@@ -223,6 +258,14 @@ func (h *Handler) handleTraces(w http.ResponseWriter, r *http.Request) {
 	agent := r.URL.Query().Get("agent")
 	tool := r.URL.Query().Get("tool")
 	writeJSON(w, 200, h.Traces.Query(agent, tool, 100))
+}
+
+func (h *Handler) handleMCPServers(w http.ResponseWriter, _ *http.Request) {
+	if h.MCPForwarder == nil {
+		writeJSON(w, 200, []any{})
+		return
+	}
+	writeJSON(w, 200, h.MCPForwarder.ServerStatuses())
 }
 
 func (h *Handler) handleHealth(w http.ResponseWriter, _ *http.Request) {

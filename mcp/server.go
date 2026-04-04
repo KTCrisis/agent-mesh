@@ -35,20 +35,22 @@ type rpcError struct {
 	Message string `json:"message"`
 }
 
-// MCP tool format
-type mcpTool struct {
+// MCPTool is the MCP tool format.
+type MCPTool struct {
 	Name        string    `json:"name"`
 	Description string    `json:"description"`
-	InputSchema mcpSchema `json:"inputSchema"`
+	InputSchema MCPSchema `json:"inputSchema"`
 }
 
-type mcpSchema struct {
+// MCPSchema describes the input parameters of an MCP tool.
+type MCPSchema struct {
 	Type       string                `json:"type"`
-	Properties map[string]mcpProp    `json:"properties,omitempty"`
+	Properties map[string]MCPProp    `json:"properties,omitempty"`
 	Required   []string              `json:"required,omitempty"`
 }
 
-type mcpProp struct {
+// MCPProp describes a single property in an MCP tool schema.
+type MCPProp struct {
 	Type        string `json:"type"`
 	Description string `json:"description"`
 }
@@ -126,11 +128,11 @@ func (s *Server) handleInitialize() map[string]any {
 
 func (s *Server) handleToolsList() map[string]any {
 	tools := s.Registry.All()
-	mcpTools := make([]mcpTool, 0, len(tools))
+	mcpTools := make([]MCPTool, 0, len(tools))
 
 	for _, t := range tools {
 		// Build input schema from tool params
-		props := make(map[string]mcpProp)
+		props := make(map[string]MCPProp)
 		var required []string
 
 		for _, p := range t.Params {
@@ -140,7 +142,7 @@ func (s *Server) handleToolsList() map[string]any {
 					propType = "string"
 				}
 			}
-			props[p.Name] = mcpProp{
+			props[p.Name] = MCPProp{
 				Type:        propType,
 				Description: fmt.Sprintf("%s parameter (%s)", p.Name, p.In),
 			}
@@ -149,10 +151,10 @@ func (s *Server) handleToolsList() map[string]any {
 			}
 		}
 
-		mcpTools = append(mcpTools, mcpTool{
+		mcpTools = append(mcpTools, MCPTool{
 			Name:        t.Name,
 			Description: t.Description,
-			InputSchema: mcpSchema{
+			InputSchema: MCPSchema{
 				Type:       "object",
 				Properties: props,
 				Required:   required,

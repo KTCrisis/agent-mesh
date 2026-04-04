@@ -1,5 +1,19 @@
 port: 9090
 
+# Upstream MCP servers to connect to
+# mcp_servers:
+#   - name: filesystem
+#     transport: stdio
+#     command: npx
+#     args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+#
+#   - name: github
+#     transport: stdio
+#     command: npx
+#     args: ["-y", "@modelcontextprotocol/server-github"]
+#     env:
+#       GITHUB_TOKEN: "ghp_xxx"
+
 policies:
   # Support agent — can read but limited writes
   - name: support-agent

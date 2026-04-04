@@ -1,0 +1,59 @@
+package registry
+
+// MCPToolDef describes a tool discovered from an upstream MCP server.
+// This is the registry's input format — callers convert from their MCP types to this.
+type MCPToolDef struct {
+	Name        string
+	Description string
+	Params      []Param
+}
+
+// NewMCPToolDef creates an MCPToolDef from raw MCP schema data.
+func NewMCPToolDef(name, description string, properties map[string]MCPPropDef, required []string) MCPToolDef {
+	requiredSet := make(map[string]bool, len(required))
+	for _, r := range required {
+		requiredSet[r] = true
+	}
+	var params []Param
+	for pName, prop := range properties {
+		params = append(params, Param{
+			Name:     pName,
+			In:       "body",
+			Type:     prop.Type,
+			Required: requiredSet[pName],
+		})
+	}
+	return MCPToolDef{
+		Name:        name,
+		Description: description,
+		Params:      params,
+	}
+}
+
+// MCPPropDef is a minimal property definition for MCP tool schema conversion.
+type MCPPropDef struct {
+	Type string
+}
+
+// LoadMCP registers tools from an upstream MCP server into the registry.
+// Tool names are namespaced as "serverName.toolName" to avoid collisions.
+func (r *Registry) LoadMCP(serverName string, tools []MCPToolDef) {
+	for _, t := range tools {
+		r.tools[serverName+"."+t.Name] = &Tool{
+			Name:        serverName + "." + t.Name,
+			Description: t.Description,
+			Source:      "mcp",
+			MCPServer:   serverName,
+			Params:      t.Params,
+		}
+	}
+}
+
+// RemoveByServer removes all tools from a given MCP server.
+func (r *Registry) RemoveByServer(serverName string) {
+	for name, t := range r.tools {
+		if t.MCPServer == serverName {
+			delete(r.tools, name)
+		}
+	}
+}

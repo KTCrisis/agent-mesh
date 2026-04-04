@@ -1,11 +1,15 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/KTCrisis/agent-mesh/config"
 	"github.com/KTCrisis/agent-mesh/mcp"
@@ -53,7 +57,7 @@ func main() {
 			slog.Info("  tool registered", "name", t.Name, "method", t.Method, "path", t.Path)
 		}
 	} else {
-		slog.Warn("no OpenAPI spec provided — registry is empty. Use --openapi to load tools.")
+		slog.Info("no OpenAPI spec provided — use --openapi to load REST tools")
 	}
 
 	// 3. Build policy engine
@@ -66,7 +70,39 @@ func main() {
 	// 5. Build handler
 	handler := proxy.NewHandler(reg, pol, traces)
 
-	// 6. MCP mode or HTTP mode
+	// 6. Connect upstream MCP servers
+	var mcpManager *mcp.Manager
+	if len(cfg.MCPServers) > 0 {
+		mcpManager = mcp.NewManager()
+		handler.MCPForwarder = mcpManager
+
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		for _, serverCfg := range cfg.MCPServers {
+			switch serverCfg.Transport {
+			case "stdio":
+				client := mcp.NewStdioClient(serverCfg.Name, serverCfg.Command, serverCfg.Args, serverCfg.Env)
+				if err := client.Connect(ctx); err != nil {
+					slog.Error("failed to connect MCP server", "name", serverCfg.Name, "error", err)
+					continue
+				}
+				mcpManager.Add(client)
+
+				// Register discovered tools into the shared registry
+				defs := convertMCPTools(client.Tools())
+				reg.LoadMCP(serverCfg.Name, defs)
+				for _, d := range defs {
+					slog.Info("  MCP tool registered", "name", serverCfg.Name+"."+d.Name, "server", serverCfg.Name)
+				}
+			default:
+				slog.Error("unsupported MCP transport", "name", serverCfg.Name, "transport", serverCfg.Transport)
+			}
+		}
+		cancel()
+
+		slog.Info("MCP upstream servers connected", "count", len(mcpManager.All()))
+	}
+
+	// 7. MCP mode or HTTP mode
 	if *mcpMode {
 		// MCP: JSON-RPC over stdio — logs go to stderr to keep stdout clean
 		slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})))
@@ -87,13 +123,40 @@ func main() {
 		slog.Info("endpoints",
 			"tool_call", fmt.Sprintf("POST http://localhost%s/tool/{name}", addr),
 			"list_tools", fmt.Sprintf("GET  http://localhost%s/tools", addr),
+			"mcp_servers", fmt.Sprintf("GET  http://localhost%s/mcp-servers", addr),
 			"traces", fmt.Sprintf("GET  http://localhost%s/traces", addr),
 			"health", fmt.Sprintf("GET  http://localhost%s/health", addr),
 		)
 
-		if err := http.ListenAndServe(addr, handler); err != nil {
+		// Graceful shutdown: close MCP clients on SIGINT/SIGTERM
+		srv := &http.Server{Addr: addr, Handler: handler}
+		go func() {
+			sigCh := make(chan os.Signal, 1)
+			signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+			<-sigCh
+			slog.Info("shutting down...")
+			if mcpManager != nil {
+				mcpManager.CloseAll()
+			}
+			srv.Shutdown(context.Background())
+		}()
+
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			slog.Error("server failed", "error", err)
 			os.Exit(1)
 		}
 	}
+}
+
+// convertMCPTools bridges mcp.MCPTool → registry.MCPToolDef.
+func convertMCPTools(tools []mcp.MCPTool) []registry.MCPToolDef {
+	defs := make([]registry.MCPToolDef, 0, len(tools))
+	for _, t := range tools {
+		props := make(map[string]registry.MCPPropDef, len(t.InputSchema.Properties))
+		for name, p := range t.InputSchema.Properties {
+			props[name] = registry.MCPPropDef{Type: p.Type}
+		}
+		defs = append(defs, registry.NewMCPToolDef(t.Name, t.Description, props, t.InputSchema.Required))
+	}
+	return defs
 }

@@ -7,8 +7,20 @@ import (
 )
 
 type Config struct {
-	Port     int      `yaml:"port"`
-	Policies []Policy `yaml:"policies"`
+	Port       int               `yaml:"port"`
+	Policies   []Policy          `yaml:"policies"`
+	MCPServers []MCPServerConfig `yaml:"mcp_servers"`
+}
+
+// MCPServerConfig declares an upstream MCP server to connect to.
+type MCPServerConfig struct {
+	Name      string            `yaml:"name"`
+	Transport string            `yaml:"transport"` // "stdio" or "sse"
+	Command   string            `yaml:"command,omitempty"`
+	Args      []string          `yaml:"args,omitempty"`
+	Env       map[string]string `yaml:"env,omitempty"`
+	URL       string            `yaml:"url,omitempty"`
+	Headers   map[string]string `yaml:"headers,omitempty"`
 }
 
 type Policy struct {

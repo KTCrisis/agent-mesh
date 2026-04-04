@@ -8,45 +8,6 @@ import (
 	"strings"
 )
 
-// Tool represents a callable API operation discovered from an OpenAPI spec.
-type Tool struct {
-	Name        string            `json:"name"`
-	Description string            `json:"description"`
-	Method      string            `json:"method"`
-	Path        string            `json:"path"`
-	BaseURL     string            `json:"base_url"`
-	Params      []Param           `json:"params,omitempty"`
-	Headers     map[string]string `json:"-"` // backend auth headers (not exposed to agents)
-}
-
-type Param struct {
-	Name     string `json:"name"`
-	In       string `json:"in"`       // path, query, body
-	Type     string `json:"type"`
-	Required bool   `json:"required"`
-}
-
-// Registry holds all discovered tools.
-type Registry struct {
-	tools map[string]*Tool
-}
-
-func New() *Registry {
-	return &Registry{tools: make(map[string]*Tool)}
-}
-
-func (r *Registry) Get(name string) *Tool {
-	return r.tools[name]
-}
-
-func (r *Registry) All() []*Tool {
-	out := make([]*Tool, 0, len(r.tools))
-	for _, t := range r.tools {
-		out = append(out, t)
-	}
-	return out
-}
-
 // LoadOpenAPI fetches an OpenAPI 2.0/3.0 spec and extracts tools.
 func (r *Registry) LoadOpenAPI(specURL string, backendURL string, headers map[string]string) error {
 	resp, err := http.Get(specURL)
@@ -101,6 +62,7 @@ func (r *Registry) LoadOpenAPI(specURL string, backendURL string, headers map[st
 				BaseURL:     base,
 				Headers:     headers,
 				Params:      extractParams(op),
+				Source:      "openapi",
 			}
 
 			r.tools[tool.Name] = tool
@@ -110,17 +72,11 @@ func (r *Registry) LoadOpenAPI(specURL string, backendURL string, headers map[st
 	return nil
 }
 
-// LoadManual registers a tool manually (for non-OpenAPI backends).
-func (r *Registry) LoadManual(tool *Tool) {
-	r.tools[tool.Name] = tool
-}
-
 // buildToolName creates a snake_case name from operationId or method+path.
 func buildToolName(method string, path string, op map[string]any) string {
 	if opID, ok := op["operationId"].(string); ok && opID != "" {
 		return toSnake(opID)
 	}
-	// Fallback: get_users, post_orders, delete_order_by_id
 	clean := strings.NewReplacer("/", "_", "{", "", "}", "", "-", "_").Replace(path)
 	clean = strings.Trim(clean, "_")
 	return strings.ToLower(method) + "_" + clean
@@ -129,7 +85,6 @@ func buildToolName(method string, path string, op map[string]any) string {
 func extractParams(op map[string]any) []Param {
 	var params []Param
 
-	// OpenAPI 2.0 / 3.0 parameters
 	if rawParams, ok := op["parameters"].([]any); ok {
 		for _, rp := range rawParams {
 			p, ok := rp.(map[string]any)
@@ -152,7 +107,6 @@ func extractParams(op map[string]any) []Param {
 		}
 	}
 
-	// OpenAPI 3.0 requestBody → treat as a "body" param
 	if _, ok := op["requestBody"]; ok {
 		params = append(params, Param{
 			Name:     "body",
@@ -166,7 +120,6 @@ func extractParams(op map[string]any) []Param {
 }
 
 func inferBaseURL(spec map[string]any) string {
-	// OpenAPI 3.0: servers[0].url
 	if servers, ok := spec["servers"].([]any); ok && len(servers) > 0 {
 		if s, ok := servers[0].(map[string]any); ok {
 			if url, ok := s["url"].(string); ok {
@@ -174,7 +127,6 @@ func inferBaseURL(spec map[string]any) string {
 			}
 		}
 	}
-	// OpenAPI 2.0: host + basePath
 	host := strVal(spec, "host", "localhost")
 	basePath := strVal(spec, "basePath", "")
 	scheme := "https"
@@ -207,7 +159,7 @@ func toSnake(s string) string {
 			if i > 0 {
 				b.WriteByte('_')
 			}
-			b.WriteRune(c + 32) // toLower
+			b.WriteRune(c + 32)
 		} else {
 			b.WriteRune(c)
 		}
