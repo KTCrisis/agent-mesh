@@ -38,6 +38,9 @@ func (r *Registry) LoadOpenAPI(specURL string, backendURL string, headers map[st
 		return fmt.Errorf("no paths found in spec")
 	}
 
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	for path, methods := range paths {
 		methodMap, ok := methods.(map[string]any)
 		if !ok {
@@ -65,7 +68,7 @@ func (r *Registry) LoadOpenAPI(specURL string, backendURL string, headers map[st
 				Source:      "openapi",
 			}
 
-			r.tools[tool.Name] = tool
+			r.set(tool.Name, tool)
 		}
 	}
 

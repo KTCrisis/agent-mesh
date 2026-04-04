@@ -33,6 +33,7 @@ type MCPClient struct {
 	tools     []MCPTool
 	status    string // "connecting", "ready", "error", "closed"
 	lastError string
+	done      chan struct{} // closed when readLoop exits
 }
 
 // NewStdioClient creates an MCP client that communicates via stdin/stdout of a subprocess.
@@ -48,6 +49,7 @@ func NewStdioClient(name, command string, args []string, env map[string]string) 
 		cmd:       cmd,
 		pending:   make(map[int64]chan rpcResponse),
 		status:    "connecting",
+		done:      make(chan struct{}),
 	}
 }
 
@@ -88,7 +90,7 @@ func (c *MCPClient) Connect(ctx context.Context) error {
 	// Start read loop
 	go c.readLoop()
 
-	// Initialize handshake
+	// Initialize handshake — kill subprocess on failure
 	initResp, err := c.send(ctx, "initialize", map[string]any{
 		"protocolVersion": "2024-11-05",
 		"capabilities":    map[string]any{},
@@ -98,26 +100,29 @@ func (c *MCPClient) Connect(ctx context.Context) error {
 		},
 	})
 	if err != nil {
-		c.setStatus("error", err.Error())
+		c.Close()
 		return fmt.Errorf("initialize: %w", err)
 	}
 	slog.Info("MCP client: initialized", "server", c.Name, "result", initResp.Result)
 
 	// Send initialized notification (no response expected)
-	c.writeRequest(rpcRequest{
+	if err := c.writeRequest(rpcRequest{
 		JSONRPC: "2.0",
 		Method:  "notifications/initialized",
-	})
+	}); err != nil {
+		c.Close()
+		return fmt.Errorf("send initialized notification: %w", err)
+	}
 
 	// Discover tools
 	toolsResp, err := c.send(ctx, "tools/list", nil)
 	if err != nil {
-		c.setStatus("error", err.Error())
+		c.Close()
 		return fmt.Errorf("tools/list: %w", err)
 	}
 
 	if err := c.parseTools(toolsResp.Result); err != nil {
-		c.setStatus("error", err.Error())
+		c.Close()
 		return fmt.Errorf("parse tools: %w", err)
 	}
 
@@ -130,7 +135,9 @@ func (c *MCPClient) Connect(ctx context.Context) error {
 func (c *MCPClient) Tools() []MCPTool {
 	c.stateMu.Lock()
 	defer c.stateMu.Unlock()
-	return c.tools
+	out := make([]MCPTool, len(c.tools))
+	copy(out, c.tools)
+	return out
 }
 
 // Status returns the current connection status.
@@ -158,12 +165,29 @@ func (c *MCPClient) CallTool(ctx context.Context, name string, arguments map[str
 // Close shuts down the connection and kills the subprocess.
 func (c *MCPClient) Close() error {
 	c.setStatus("closed", "")
+
+	// Drain all pending requests so send() goroutines don't hang
+	c.failAllPending("client closed")
+
 	if c.stdin != nil {
 		c.stdin.Close()
 	}
-	if c.cmd != nil && c.cmd.Process != nil {
-		c.cmd.Process.Kill()
+	if c.cmd == nil || c.cmd.Process == nil {
+		return nil
+	}
+
+	c.cmd.Process.Kill()
+
+	// Wait with timeout to avoid blocking forever
+	waitDone := make(chan struct{})
+	go func() {
 		c.cmd.Wait()
+		close(waitDone)
+	}()
+	select {
+	case <-waitDone:
+	case <-time.After(5 * time.Second):
+		slog.Warn("MCP client: subprocess did not exit after kill", "server", c.Name)
 	}
 	return nil
 }
@@ -191,20 +215,14 @@ func (c *MCPClient) send(ctx context.Context, method string, params map[string]a
 	}
 
 	if err := c.writeRequest(req); err != nil {
-		return rpcResponse{}, err
-	}
-
-	timeout := 30 * time.Second
-	deadline, ok := ctx.Deadline()
-	if ok {
-		timeout = time.Until(deadline)
+		return rpcResponse{}, fmt.Errorf("write %s: %w", method, err)
 	}
 
 	select {
 	case resp := <-ch:
 		return resp, nil
-	case <-time.After(timeout):
-		return rpcResponse{}, fmt.Errorf("timeout waiting for response to %s", method)
+	case <-c.done:
+		return rpcResponse{}, fmt.Errorf("connection lost while waiting for %s", method)
 	case <-ctx.Done():
 		return rpcResponse{}, ctx.Err()
 	}
@@ -222,6 +240,9 @@ func (c *MCPClient) writeRequest(req rpcRequest) error {
 }
 
 func (c *MCPClient) readLoop() {
+	defer close(c.done)
+	defer c.failAllPending("connection lost")
+
 	for {
 		line, err := c.stdout.ReadBytes('\n')
 		if err != nil {
@@ -244,16 +265,36 @@ func (c *MCPClient) readLoop() {
 		}
 
 		// Match response to pending request by ID
-		if resp.ID != nil {
-			id, ok := toInt64(resp.ID)
-			if ok {
-				c.pendingMu.Lock()
-				ch, found := c.pending[id]
-				c.pendingMu.Unlock()
-				if found {
-					ch <- resp
-				}
-			}
+		if resp.ID == nil {
+			continue
+		}
+		id, ok := toInt64(resp.ID)
+		if !ok {
+			continue
+		}
+		c.pendingMu.Lock()
+		ch, found := c.pending[id]
+		if found {
+			delete(c.pending, id)
+		}
+		c.pendingMu.Unlock()
+		if found {
+			ch <- resp
+		}
+	}
+}
+
+// failAllPending drains all pending request channels with an error response.
+func (c *MCPClient) failAllPending(reason string) {
+	c.pendingMu.Lock()
+	pending := c.pending
+	c.pending = make(map[int64]chan rpcResponse)
+	c.pendingMu.Unlock()
+
+	for _, ch := range pending {
+		select {
+		case ch <- rpcResponse{Error: &rpcError{Code: -1, Message: reason}}:
+		default:
 		}
 	}
 }

@@ -1,6 +1,8 @@
 package registry
 
 import (
+	"fmt"
+	"sync"
 	"testing"
 )
 
@@ -159,5 +161,70 @@ func TestMixedSources(t *testing.T) {
 	mcp := r.Get("fs.read_file")
 	if mcp.Source != "mcp" {
 		t.Errorf("mcp source = %q", mcp.Source)
+	}
+}
+
+func TestConcurrentAccess(t *testing.T) {
+	r := New()
+	var wg sync.WaitGroup
+
+	// Concurrent writes
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			r.LoadManual(&Tool{Name: fmt.Sprintf("tool_%d", n), Source: "openapi"})
+		}(i)
+	}
+
+	// Concurrent reads while writing
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			r.All()
+			r.Get("tool_0")
+		}()
+	}
+
+	wg.Wait()
+
+	if len(r.All()) != 50 {
+		t.Errorf("tools = %d, want 50", len(r.All()))
+	}
+}
+
+func TestConcurrentMCPLoadRemove(t *testing.T) {
+	r := New()
+	var wg sync.WaitGroup
+
+	// Load from multiple servers concurrently
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			r.LoadMCP(fmt.Sprintf("server-%d", n), []MCPToolDef{
+				{Name: "read"}, {Name: "write"},
+			})
+		}(i)
+	}
+	wg.Wait()
+
+	if len(r.All()) != 20 {
+		t.Errorf("tools = %d, want 20", len(r.All()))
+	}
+
+	// Remove concurrently
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			r.RemoveByServer(fmt.Sprintf("server-%d", n))
+		}(i)
+	}
+	wg.Wait()
+
+	if len(r.All()) != 0 {
+		t.Errorf("tools = %d, want 0 after removing all servers", len(r.All()))
 	}
 }

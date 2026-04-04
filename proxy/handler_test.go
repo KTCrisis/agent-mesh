@@ -321,3 +321,128 @@ func TestExtractAgentID(t *testing.T) {
 		}
 	}
 }
+
+func TestHandleToolCallInvalidJSON(t *testing.T) {
+	handler, _ := setupHandler(t)
+
+	req := httptest.NewRequest("POST", "/tool/get_pet", strings.NewReader("not json"))
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != 400 {
+		t.Errorf("status = %d, want 400", w.Code)
+	}
+}
+
+func TestHandleToolCallEmptyToolName(t *testing.T) {
+	handler, _ := setupHandler(t)
+
+	req := httptest.NewRequest("POST", "/tool/", strings.NewReader(`{"params":{}}`))
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	// Empty tool name → not found in registry → 404
+	if w.Code != 404 {
+		t.Errorf("status = %d, want 404", w.Code)
+	}
+}
+
+func TestHandleToolCallMCPNoForwarder(t *testing.T) {
+	reg := registry.New()
+	reg.LoadMCP("orphan", []registry.MCPToolDef{{Name: "tool"}})
+
+	pol := policy.NewEngine([]config.Policy{
+		{Name: "allow-all", Agent: "*", Rules: []config.Rule{
+			{Tools: []string{"*"}, Action: "allow"},
+		}},
+	})
+
+	// No MCPForwarder set
+	handler := NewHandler(reg, pol, trace.NewStore(100))
+
+	req := httptest.NewRequest("POST", "/tool/orphan.tool", strings.NewReader(`{"params":{}}`))
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != 502 {
+		t.Errorf("status = %d, want 502 (no forwarder)", w.Code)
+	}
+}
+
+func TestHandleToolCallHumanApproval(t *testing.T) {
+	reg := registry.New()
+	reg.LoadManual(&registry.Tool{Name: "risky_tool", Source: "openapi"})
+
+	pol := policy.NewEngine([]config.Policy{
+		{Name: "approval", Agent: "*", Rules: []config.Rule{
+			{Tools: []string{"risky_tool"}, Action: "human_approval"},
+		}},
+	})
+
+	handler := NewHandler(reg, pol, trace.NewStore(100))
+
+	req := httptest.NewRequest("POST", "/tool/risky_tool", strings.NewReader(`{"params":{}}`))
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != 202 {
+		t.Errorf("status = %d, want 202", w.Code)
+	}
+
+	var resp ToolCallResponse
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp.Policy != "human_approval" {
+		t.Errorf("policy = %q, want human_approval", resp.Policy)
+	}
+}
+
+func TestForwardHTTPSpecialCharsInParams(t *testing.T) {
+	// Backend that echoes the request URL
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{"url": r.URL.String()})
+	}))
+	defer backend.Close()
+
+	reg := registry.New()
+	reg.LoadManual(&registry.Tool{
+		Name:    "search",
+		Method:  "GET",
+		Path:    "/search",
+		BaseURL: backend.URL,
+		Source:  "openapi",
+	})
+
+	pol := policy.NewEngine([]config.Policy{
+		{Name: "allow", Agent: "*", Rules: []config.Rule{
+			{Tools: []string{"*"}, Action: "allow"},
+		}},
+	})
+
+	handler := NewHandler(reg, pol, trace.NewStore(100))
+
+	req := httptest.NewRequest("POST", "/tool/search",
+		strings.NewReader(`{"params":{"q":"hello world&foo=bar"}}`))
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != 200 {
+		t.Fatalf("status = %d, body: %s", w.Code, w.Body.String())
+	}
+
+	var resp ToolCallResponse
+	json.NewDecoder(w.Body).Decode(&resp)
+	result, ok := resp.Result.(map[string]any)
+	if !ok {
+		t.Fatalf("result type = %T", resp.Result)
+	}
+	urlStr, _ := result["url"].(string)
+	// The & should be encoded, not splitting query params
+	if strings.Contains(urlStr, "foo=bar") {
+		t.Errorf("URL params not properly encoded: %s", urlStr)
+	}
+}

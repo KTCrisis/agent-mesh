@@ -242,7 +242,14 @@ func (s *Server) handleToolsCall(params map[string]any) (any, *rpcError) {
 	}
 
 	// Serialize result as text
-	resultJSON, _ := json.MarshalIndent(result, "", "  ")
+	resultJSON, err := json.MarshalIndent(result, "", "  ")
+	if err != nil {
+		return map[string]any{
+			"content": []map[string]any{
+				{"type": "text", "text": fmt.Sprintf("Failed to serialize result: %s", err.Error())},
+			},
+		}, nil
+	}
 	return map[string]any{
 		"content": []map[string]any{
 			{"type": "text", "text": string(resultJSON)},
@@ -251,8 +258,14 @@ func (s *Server) handleToolsCall(params map[string]any) (any, *rpcError) {
 }
 
 func (s *Server) writeResponse(w io.Writer, resp rpcResponse) {
-	data, _ := json.Marshal(resp)
-	fmt.Fprintf(w, "%s\n", data)
+	data, err := json.Marshal(resp)
+	if err != nil {
+		slog.Error("MCP server: failed to marshal response", "error", err)
+		return
+	}
+	if _, err := fmt.Fprintf(w, "%s\n", data); err != nil {
+		slog.Error("MCP server: failed to write response", "error", err)
+	}
 }
 
 func (s *Server) writeError(w io.Writer, id any, code int, msg string) {

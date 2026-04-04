@@ -38,19 +38,24 @@ type MCPPropDef struct {
 // LoadMCP registers tools from an upstream MCP server into the registry.
 // Tool names are namespaced as "serverName.toolName" to avoid collisions.
 func (r *Registry) LoadMCP(serverName string, tools []MCPToolDef) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	for _, t := range tools {
-		r.tools[serverName+"."+t.Name] = &Tool{
-			Name:        serverName + "." + t.Name,
+		name := serverName + "." + t.Name
+		r.set(name, &Tool{
+			Name:        name,
 			Description: t.Description,
 			Source:      "mcp",
 			MCPServer:   serverName,
 			Params:      t.Params,
-		}
+		})
 	}
 }
 
 // RemoveByServer removes all tools from a given MCP server.
 func (r *Registry) RemoveByServer(serverName string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	for name, t := range r.tools {
 		if t.MCPServer == serverName {
 			delete(r.tools, name)

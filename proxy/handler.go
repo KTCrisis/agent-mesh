@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -178,35 +179,41 @@ func (h *Handler) Forward(tool *registry.Tool, params map[string]any) (any, int,
 
 // forwardHTTP sends the request to a REST backend.
 func (h *Handler) forwardHTTP(tool *registry.Tool, params map[string]any) (any, int, error) {
-	// Build URL with path params
-	url := tool.BaseURL + tool.Path
+	// Build URL with path params (URL-encoded)
+	reqURL := tool.BaseURL + tool.Path
 	for k, v := range params {
 		placeholder := "{" + k + "}"
-		if strings.Contains(url, placeholder) {
-			url = strings.Replace(url, placeholder, fmt.Sprintf("%v", v), 1)
+		if strings.Contains(reqURL, placeholder) {
+			reqURL = strings.Replace(reqURL, placeholder, url.PathEscape(fmt.Sprintf("%v", v)), 1)
 		}
 	}
 
-	// Build query params for GET
+	// Build query params for GET/DELETE (URL-encoded)
 	var body io.Reader
 	if tool.Method == "GET" || tool.Method == "DELETE" {
-		sep := "?"
-		if strings.Contains(url, "?") {
-			sep = "&"
-		}
+		q := url.Values{}
 		for k, v := range params {
 			if !strings.Contains(tool.Path, "{"+k+"}") {
-				url += sep + k + "=" + fmt.Sprintf("%v", v)
+				q.Set(k, fmt.Sprintf("%v", v))
+			}
+		}
+		if encoded := q.Encode(); encoded != "" {
+			sep := "?"
+			if strings.Contains(reqURL, "?") {
 				sep = "&"
 			}
+			reqURL += sep + encoded
 		}
 	} else {
 		// POST/PUT/PATCH: send params as JSON body
-		jsonBody, _ := json.Marshal(params)
+		jsonBody, err := json.Marshal(params)
+		if err != nil {
+			return nil, 0, fmt.Errorf("marshal params: %w", err)
+		}
 		body = bytes.NewReader(jsonBody)
 	}
 
-	req, err := http.NewRequest(tool.Method, url, body)
+	req, err := http.NewRequest(tool.Method, reqURL, body)
 	if err != nil {
 		return nil, 0, fmt.Errorf("build request: %w", err)
 	}
@@ -222,7 +229,10 @@ func (h *Handler) forwardHTTP(tool *registry.Tool, params map[string]any) (any, 
 	}
 	defer resp.Body.Close()
 
-	respBody, _ := io.ReadAll(resp.Body)
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, resp.StatusCode, fmt.Errorf("read response: %w", err)
+	}
 
 	var result any
 	if err := json.Unmarshal(respBody, &result); err != nil {
