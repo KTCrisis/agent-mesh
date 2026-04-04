@@ -8,6 +8,7 @@ import (
 
 type Config struct {
 	Port       int               `yaml:"port"`
+	TraceFile  string            `yaml:"trace_file"`
 	Policies   []Policy          `yaml:"policies"`
 	MCPServers []MCPServerConfig `yaml:"mcp_servers"`
 }

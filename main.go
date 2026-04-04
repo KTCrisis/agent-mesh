@@ -71,7 +71,20 @@ func main() {
 	slog.Info("policy engine ready", "policies", len(cfg.Policies))
 
 	// 4. Build trace store
-	traces := trace.NewStore(10000)
+	var traces *trace.Store
+	if cfg.TraceFile != "" {
+		var err error
+		traces, err = trace.NewPersistentStore(10000, cfg.TraceFile)
+		if err != nil {
+			slog.Error("failed to open trace file", "path", cfg.TraceFile, "error", err)
+			os.Exit(1)
+		}
+		defer traces.Close()
+		slog.Info("trace store ready", "file", cfg.TraceFile)
+	} else {
+		traces = trace.NewStore(10000)
+		slog.Info("trace store ready", "mode", "in-memory")
+	}
 
 	// 5. Build handler
 	handler := proxy.NewHandler(reg, pol, traces)

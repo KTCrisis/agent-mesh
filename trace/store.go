@@ -1,8 +1,12 @@
 package trace
 
 import (
+	"bufio"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
+	"log/slog"
+	"os"
 	"sync"
 	"time"
 )
@@ -21,13 +25,18 @@ type Entry struct {
 	Timestamp  time.Time      `json:"timestamp"`
 }
 
-// Store is a thread-safe in-memory trace store.
+// Store is a thread-safe trace store with optional JSONL file persistence.
 type Store struct {
 	mu      sync.RWMutex
 	entries []Entry
 	maxSize int
+
+	// JSONL file persistence (nil = in-memory only)
+	file   *os.File
+	writer *bufio.Writer
 }
 
+// NewStore creates an in-memory trace store.
 func NewStore(maxSize int) *Store {
 	if maxSize <= 0 {
 		maxSize = 10000
@@ -36,6 +45,28 @@ func NewStore(maxSize int) *Store {
 		entries: make([]Entry, 0, 256),
 		maxSize: maxSize,
 	}
+}
+
+// NewPersistentStore creates a trace store that appends to a JSONL file.
+// Existing entries are loaded from the file on startup.
+func NewPersistentStore(maxSize int, path string) (*Store, error) {
+	s := NewStore(maxSize)
+
+	// Load existing entries from file
+	if err := s.loadFromFile(path); err != nil {
+		slog.Warn("trace: could not load existing traces", "path", path, "error", err)
+		// Not fatal — start fresh
+	}
+
+	// Open file for appending
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return nil, err
+	}
+	s.file = f
+	s.writer = bufio.NewWriter(f)
+
+	return s, nil
 }
 
 // Record adds a trace entry.
@@ -55,6 +86,18 @@ func (s *Store) Record(e Entry) {
 	// Evict oldest if over max
 	if len(s.entries) > s.maxSize {
 		s.entries = s.entries[len(s.entries)-s.maxSize:]
+	}
+
+	// Append to JSONL file
+	if s.writer != nil {
+		data, err := json.Marshal(e)
+		if err != nil {
+			slog.Error("trace: failed to marshal entry", "error", err)
+			return
+		}
+		s.writer.Write(data)
+		s.writer.WriteByte('\n')
+		s.writer.Flush()
 	}
 }
 
@@ -108,6 +151,61 @@ func (s *Store) Stats() map[string]int {
 		}
 	}
 	return stats
+}
+
+// Close flushes and closes the trace file.
+func (s *Store) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.writer != nil {
+		s.writer.Flush()
+	}
+	if s.file != nil {
+		return s.file.Close()
+	}
+	return nil
+}
+
+// loadFromFile reads existing JSONL entries into memory.
+func (s *Store) loadFromFile(path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil // No file yet, start fresh
+		}
+		return err
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	// Increase buffer for potentially large trace lines
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+
+	loaded := 0
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+		var e Entry
+		if err := json.Unmarshal(line, &e); err != nil {
+			slog.Warn("trace: skipping malformed line", "error", err)
+			continue
+		}
+		s.entries = append(s.entries, e)
+		loaded++
+	}
+
+	// Apply max size limit
+	if len(s.entries) > s.maxSize {
+		s.entries = s.entries[len(s.entries)-s.maxSize:]
+	}
+
+	if loaded > 0 {
+		slog.Info("trace: loaded from file", "path", path, "entries", loaded, "kept", len(s.entries))
+	}
+
+	return scanner.Err()
 }
 
 func newID() string {

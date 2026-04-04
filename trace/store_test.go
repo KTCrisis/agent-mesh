@@ -1,6 +1,8 @@
 package trace
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -91,5 +93,119 @@ func TestStats(t *testing.T) {
 	}
 	if stats["errors"] != 1 {
 		t.Errorf("errors = %d", stats["errors"])
+	}
+}
+
+func TestPersistentStore(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "traces.jsonl")
+
+	// Create store, write entries
+	s, err := NewPersistentStore(100, path)
+	if err != nil {
+		t.Fatalf("NewPersistentStore: %v", err)
+	}
+	s.Record(Entry{AgentID: "bot", Tool: "get_order", Policy: "allow"})
+	s.Record(Entry{AgentID: "bot", Tool: "delete_order", Policy: "deny"})
+	s.Close()
+
+	// Verify file exists and has content
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read file: %v", err)
+	}
+	if len(data) == 0 {
+		t.Fatal("trace file is empty")
+	}
+
+	// Reopen store — should reload entries
+	s2, err := NewPersistentStore(100, path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer s2.Close()
+
+	entries := s2.Query("", "", 10)
+	if len(entries) != 2 {
+		t.Fatalf("reloaded entries = %d, want 2", len(entries))
+	}
+
+	// Most recent first
+	if entries[0].Tool != "delete_order" {
+		t.Errorf("first entry = %q, want delete_order (most recent)", entries[0].Tool)
+	}
+	if entries[1].Tool != "get_order" {
+		t.Errorf("second entry = %q, want get_order", entries[1].Tool)
+	}
+}
+
+func TestPersistentStoreAppend(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "traces.jsonl")
+
+	// Session 1: write 2 entries
+	s1, _ := NewPersistentStore(100, path)
+	s1.Record(Entry{AgentID: "bot", Tool: "a", Policy: "allow"})
+	s1.Record(Entry{AgentID: "bot", Tool: "b", Policy: "allow"})
+	s1.Close()
+
+	// Session 2: write 1 more entry
+	s2, _ := NewPersistentStore(100, path)
+	s2.Record(Entry{AgentID: "bot", Tool: "c", Policy: "deny"})
+	s2.Close()
+
+	// Session 3: should see all 3
+	s3, _ := NewPersistentStore(100, path)
+	defer s3.Close()
+
+	entries := s3.Query("", "", 10)
+	if len(entries) != 3 {
+		t.Fatalf("entries = %d, want 3", len(entries))
+	}
+}
+
+func TestPersistentStoreEviction(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "traces.jsonl")
+
+	// Write 20 entries to file
+	s1, _ := NewPersistentStore(100, path)
+	for i := 0; i < 20; i++ {
+		s1.Record(Entry{AgentID: "bot", Tool: "x", Policy: "allow"})
+	}
+	s1.Close()
+
+	// Reload with maxSize 10 — should keep only last 10
+	s2, _ := NewPersistentStore(10, path)
+	defer s2.Close()
+
+	stats := s2.Stats()
+	if stats["total"] != 10 {
+		t.Errorf("total = %d, want 10 (evicted on load)", stats["total"])
+	}
+}
+
+func TestPersistentStoreNewFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "new-traces.jsonl")
+
+	// File doesn't exist yet — should create it
+	s, err := NewPersistentStore(100, path)
+	if err != nil {
+		t.Fatalf("NewPersistentStore: %v", err)
+	}
+	defer s.Close()
+
+	s.Record(Entry{AgentID: "bot", Tool: "x", Policy: "allow"})
+
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		t.Fatal("trace file should have been created")
+	}
+}
+
+func TestCloseIdempotent(t *testing.T) {
+	s := NewStore(100)
+	// Close on in-memory store should not panic
+	if err := s.Close(); err != nil {
+		t.Errorf("Close: %v", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Errorf("double Close: %v", err)
 	}
 }

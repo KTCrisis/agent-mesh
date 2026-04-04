@@ -1,4 +1,5 @@
 port: 9090
+trace_file: traces.jsonl
 
 # Upstream MCP servers to connect to
 # mcp_servers:
