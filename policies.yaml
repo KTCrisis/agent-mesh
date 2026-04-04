@@ -21,6 +21,19 @@ policies:
       - tools: ["delete_pet"]
         action: deny
 
+  # Claude (MCP mode) — read access, write needs approval
+  - name: claude-agent
+    agent: "claude"
+    rules:
+      - tools: ["get_pet_by_id", "find_pets_by_status", "find_pets_by_tags", "get_inventory", "get_order_by_id", "get_user_by_name", "login_user", "logout_user"]
+        action: allow
+      - tools: ["add_pet", "place_order", "create_user"]
+        action: allow
+      - tools: ["update_pet", "update_pet_with_form", "update_user"]
+        action: human_approval
+      - tools: ["delete_pet", "delete_order", "delete_user"]
+        action: deny
+
   # Admin agent — full access
   - name: admin-agent
     agent: "admin-*"

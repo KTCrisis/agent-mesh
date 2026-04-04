@@ -8,6 +8,7 @@ import (
 	"os"
 
 	"github.com/KTCrisis/agent-mesh/config"
+	"github.com/KTCrisis/agent-mesh/mcp"
 	"github.com/KTCrisis/agent-mesh/policy"
 	"github.com/KTCrisis/agent-mesh/proxy"
 	"github.com/KTCrisis/agent-mesh/registry"
@@ -19,6 +20,8 @@ func main() {
 	specURL := flag.String("openapi", "", "OpenAPI spec URL to load")
 	backendURL := flag.String("backend", "", "Backend base URL (overrides spec)")
 	port := flag.Int("port", 0, "Port override (default from config or 9090)")
+	mcpMode := flag.Bool("mcp", false, "Run as MCP server (stdio JSON-RPC instead of HTTP)")
+	mcpAgent := flag.String("mcp-agent", "claude", "Agent ID for MCP mode policy evaluation")
 	flag.Parse()
 
 	// Setup structured logging
@@ -60,20 +63,37 @@ func main() {
 	// 4. Build trace store
 	traces := trace.NewStore(10000)
 
-	// 5. Build handler and start server
+	// 5. Build handler
 	handler := proxy.NewHandler(reg, pol, traces)
 
-	addr := fmt.Sprintf(":%d", cfg.Port)
-	slog.Info("agent-mesh sidecar starting", "addr", addr)
-	slog.Info("endpoints",
-		"tool_call", fmt.Sprintf("POST http://localhost%s/tool/{name}", addr),
-		"list_tools", fmt.Sprintf("GET  http://localhost%s/tools", addr),
-		"traces", fmt.Sprintf("GET  http://localhost%s/traces", addr),
-		"health", fmt.Sprintf("GET  http://localhost%s/health", addr),
-	)
+	// 6. MCP mode or HTTP mode
+	if *mcpMode {
+		// MCP: JSON-RPC over stdio — logs go to stderr to keep stdout clean
+		slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})))
+		server := &mcp.Server{
+			Registry: reg,
+			Policy:   pol,
+			Traces:   traces,
+			Handler:  handler,
+			AgentID:  *mcpAgent,
+		}
+		if err := server.Run(); err != nil {
+			slog.Error("MCP server failed", "error", err)
+			os.Exit(1)
+		}
+	} else {
+		addr := fmt.Sprintf(":%d", cfg.Port)
+		slog.Info("agent-mesh sidecar starting", "addr", addr)
+		slog.Info("endpoints",
+			"tool_call", fmt.Sprintf("POST http://localhost%s/tool/{name}", addr),
+			"list_tools", fmt.Sprintf("GET  http://localhost%s/tools", addr),
+			"traces", fmt.Sprintf("GET  http://localhost%s/traces", addr),
+			"health", fmt.Sprintf("GET  http://localhost%s/health", addr),
+		)
 
-	if err := http.ListenAndServe(addr, handler); err != nil {
-		slog.Error("server failed", "error", err)
-		os.Exit(1)
+		if err := http.ListenAndServe(addr, handler); err != nil {
+			slog.Error("server failed", "error", err)
+			os.Exit(1)
+		}
 	}
 }

@@ -125,7 +125,7 @@ func (h *Handler) handleToolCall(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 4. Forward to backend
-	result, statusCode, err := h.forward(tool, req.Params)
+	result, statusCode, err := h.Forward(tool, req.Params)
 	latency := time.Since(start).Milliseconds()
 
 	// 5. Trace
@@ -158,8 +158,8 @@ func (h *Handler) handleToolCall(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, resp)
 }
 
-// forward sends the actual request to the backend API.
-func (h *Handler) forward(tool *registry.Tool, params map[string]any) (any, int, error) {
+// Forward sends the actual request to the backend API.
+func (h *Handler) Forward(tool *registry.Tool, params map[string]any) (any, int, error) {
 	// Build URL with path params
 	url := tool.BaseURL + tool.Path
 	for k, v := range params {
