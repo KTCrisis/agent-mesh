@@ -1,59 +1,106 @@
 # Agent Mesh
 
-**Guardrails for AI agents.** An open-source tool that adds policy control and tracing to any AI agent's tool calls — MCP servers, REST APIs, CLI tools, skills — without changing the agent code.
+**Guardrails for AI agents.**
+Agent Mesh is an open-source policy and tracing layer for agent tool calls.
 
-One binary. One YAML config. Works with Claude Code, Cursor, LangChain, CrewAI, or any agent that uses HTTP or MCP.
+It sits between AI agents and the tools they use — MCP servers, REST APIs, CLI tools, and custom skills — without changing agent code.
+
+One binary. One YAML config. Fail closed by default.
+
+Works with Claude Code, Cursor, LangChain, CrewAI, or any agent that uses HTTP or MCP.
+
+## At a glance
+
+**Without Agent Mesh**
 
 ```
-Without Agent Mesh:          With Agent Mesh:
-Agent → Tools                Agent → agent-mesh → Tools
-(no control)                         ↓
-                              policy · trace · control
+Agent → Tools
+
+No policy
+No trace
+No control
+```
+
+**With Agent Mesh**
+
+```
+Agent → Agent Mesh → Tools
+
+Policy
+Trace
+Control
 ```
 
 ## The problem
 
-Today, when you connect MCP servers to Claude Code, Cursor, or any AI agent, the agent gets **direct, ungoverned access** to every tool:
+Today, when you connect tools directly to Claude Code, Cursor, or any other AI agent, the agent gets unguarded access to them.
+
+For example, with direct MCP connections:
 
 ```bash
-# Claude Code: direct access to everything
 claude mcp add filesystem -- npx @modelcontextprotocol/server-filesystem /
 claude mcp add github -- npx @modelcontextprotocol/server-github
 claude mcp add database -- npx mcp-server-sqlite --db prod.db
 ```
 
-```
-Claude ──▶ filesystem (full access — can delete anything)
-Claude ──▶ github (full access — can push to main)
-Claude ──▶ database (full access — can DROP TABLE)
-```
+That means:
 
-No policy. No trace. No control. If something goes wrong, you don't even know what happened.
+- Claude can access the filesystem directly
+- Claude can call GitHub tools directly
+- Claude can query or modify a database directly
+
+In practice, this can become:
+
+- `filesystem` → full access, including destructive operations
+- `github` → full access, including pushes to main
+- `database` → full access, including dangerous write queries
+
+**No policy. No trace. No control.**
+If something goes wrong, you may not even know what happened.
 
 ## The solution
 
-Replace N direct connections with **one** — through agent-mesh:
+Put Agent Mesh between the agent and its tools.
+
+Instead of wiring every tool directly into the agent, expose a controlled tool surface through Agent Mesh.
 
 ```bash
-# One MCP server instead of three — agent-mesh handles the rest
 claude mcp add agent-mesh -- ./agent-mesh --mcp --config policies.yaml
 ```
 
+Now the flow becomes:
+
 ```
 Claude ──▶ agent-mesh ──▶ filesystem (read only)
-               │      ──▶ github (read, create issues — no push)
-               │      ──▶ database (SELECT only — no DELETE)
-               ↓
-         policy · trace
+                     ├──▶ github (read, create issues — no push)
+                     └──▶ database (SELECT only — no DELETE)
+                        ↓
+                  policy · trace
 ```
 
-The agent doesn't know it's going through a proxy. It sees a normal MCP server with tools. But every call is checked against policies and traced.
+The agent sees a normal tool surface.
+Agent Mesh sits in between, enforcing policy and recording traces on every call.
+
+## Why Agent Mesh
+
+Agent Mesh focuses on one thing:
+**controlling what agents are allowed to do when they call tools.**
+
+| It is | It is not |
+|-------|-----------|
+| A policy layer for tool calls | An API gateway |
+| A lightweight local binary | An agent framework |
+| A governance sidecar / proxy | A cloud platform |
+| Config-as-code with YAML | An MCP hosting service |
+| | A dashboard-heavy control plane |
+
+Think of it as **ESLint for agent actions**: lightweight, local-first, reviewable in Git, and designed to catch unsafe behavior before it happens.
 
 ## Use cases
 
 ### Solo developer — prevent accidents
 
-You use Claude Code with MCP servers but want guardrails:
+You use Claude Code or another MCP-capable agent, but you want guardrails around tool usage.
 
 ```yaml
 policies:
@@ -63,12 +110,14 @@ policies:
       - tools: ["filesystem.read_file", "filesystem.list_directory"]
         action: allow
       - tools: ["filesystem.write_file", "filesystem.move_file"]
-        action: deny    # no accidental file writes
+        action: deny
 ```
 
-### Team — shared, reviewable config
+Result: the agent can read files, but cannot modify or move them.
 
-Instead of each developer configuring their own MCP servers, the team shares one `policies.yaml` — versioned in git, reviewed in PRs:
+### Team — shared, reviewable configuration
+
+Instead of every developer wiring their own tools and permissions, the team shares one `policies.yaml`, versioned in Git and reviewed in pull requests.
 
 ```yaml
 policies:
@@ -77,6 +126,7 @@ policies:
     rules:
       - tools: ["*"]
         action: allow
+
   - name: junior-devs
     agent: "junior-*"
     rules:
@@ -86,9 +136,11 @@ policies:
         action: deny
 ```
 
-### Enterprise — agents in production
+Result: access control becomes explicit, reviewable, and reproducible.
 
-Autonomous agents (LangChain, CrewAI) call internal APIs. Every call is traced and auditable:
+### Production agents — auditable internal tool access
+
+Autonomous agents built with LangChain, CrewAI, or custom runtimes can call internal APIs and tools through Agent Mesh, with every call traced.
 
 ```bash
 curl http://localhost:9090/traces | jq
@@ -96,41 +148,43 @@ curl http://localhost:9090/traces | jq
 
 ```json
 [
-  {"agent": "support-bot", "tool": "create_refund", "params": {"amount": 450}, "policy": "allow"},
-  {"agent": "support-bot", "tool": "create_refund", "params": {"amount": 5000}, "policy": "deny"}
+  {
+    "agent": "support-bot",
+    "tool": "create_refund",
+    "params": { "amount": 450 },
+    "policy": "allow"
+  },
+  {
+    "agent": "support-bot",
+    "tool": "create_refund",
+    "params": { "amount": 5000 },
+    "policy": "deny"
+  }
 ]
 ```
 
-### REST APIs — governance without MCP
+Result: every action is visible and auditable.
 
-You have existing REST APIs (with OpenAPI/Swagger specs) and want agents to use them with governance — without building an MCP server:
+### REST APIs — governance without building an MCP server
+
+You already have a REST API with an OpenAPI/Swagger spec. You want agents to use it with policy and trace, without writing a custom MCP server.
 
 ```bash
-# Import OpenAPI → agent-mesh adds policy + trace → Export as MCP for Claude
 ./agent-mesh --mcp --openapi https://your-api.com/swagger.json --config policies.yaml
 ```
 
-## Why agent-mesh
+Result: Agent Mesh imports the API, applies policies, and can re-expose it as MCP for Claude Code or Cursor.
 
-Agent-mesh is **not** an API gateway (Kong), **not** an agent platform (LangChain), **not** an MCP hosting service (Cloudflare). It's a simple, open-source tool that any developer can install in minutes to add control over their agents' tool calls.
+## Core principles
 
-Think of it as **ESLint for agent actions** — lightweight, runs locally, config as code, catches problems before they happen.
-
-| What it is | What it is NOT |
-|------------|----------------|
-| A policy layer for tool calls | An API gateway |
-| A lightweight local binary | A cloud platform |
-| A governance sidecar | An agent framework |
-| Config-as-code (YAML) | A dashboard you have to manage |
-
-- **For any developer** — install in 2 minutes, one binary, one YAML file
-- **For any agent** — works with Claude Code, Cursor, LangChain, CrewAI, raw HTTP, anything
-- **For any tool** — MCP servers, REST APIs, CLI tools, skills
-- **Zero agent code change** — the agent calls agent-mesh instead of the real backend. That's it
-- **Policy as code** — YAML rules, versionable in git, reviewable in PRs
-- **Fail closed** — no matching policy = denied
-- **Trace everything** — every tool call is logged with agent, params, decision, latency
-- **Single binary** — `go build`, no runtime, no containers required
+- **For any developer** — install in minutes, one binary, one YAML file
+- **For any agent** — Claude Code, Cursor, LangChain, CrewAI, raw HTTP, or custom agents
+- **For any tool surface** — MCP servers, REST APIs, CLI tools, custom skills
+- **Zero agent code change** — point the agent at Agent Mesh instead of the real backend
+- **Policy as code** — YAML rules, versionable in Git, reviewable in PRs
+- **Fail closed** — no matching policy means deny
+- **Trace everything** — every call is logged with agent, params, decision, and latency
+- **Single binary** — no mandatory runtime, no mandatory containers
 
 ## Quick start
 
@@ -140,27 +194,31 @@ Think of it as **ESLint for agent actions** — lightweight, runs locally, confi
 go build -o agent-mesh .
 ```
 
-### 2. Discover tools and generate a policy
+### 2. Discover tools and generate a starter policy
 
-Don't know the tool names? Use `discover` to connect to your MCP servers, list all tools, and generate a starter policy:
+If you do not know the tool names yet, use `discover`.
 
 ```bash
-# List all tools from an MCP server
+# Discover tools from MCP servers defined in config
 ./agent-mesh discover --config policies.yaml
 
-# Generate a ready-to-use policy (read-only by default)
+# Generate a starter policy (read-only defaults)
 ./agent-mesh discover --config policies.yaml --generate-policy
 
 # Discover tools from an OpenAPI spec
 ./agent-mesh discover --openapi https://petstore.swagger.io/v2/swagger.json --generate-policy
 ```
 
-The `discover` command connects, lists tools with descriptions, and classifies them as read or write operations. You can copy the generated policy into your `policies.yaml` and adjust.
+The `discover` command:
 
-### 3. Write a policy (or use the generated one)
+- connects to upstream tool sources
+- lists tools with descriptions
+- classifies them as read or write operations
+- generates a safe starter policy you can refine
+
+### 3. Write a policy
 
 ```yaml
-# policies.yaml
 mcp_servers:
   - name: filesystem
     transport: stdio
@@ -171,99 +229,101 @@ policies:
   - name: safe-mode
     agent: "*"
     rules:
-      - tools: ["filesystem.read_file", "filesystem.list_directory", "filesystem.search_files"]
+      - tools:
+          [
+            "filesystem.read_file",
+            "filesystem.list_directory",
+            "filesystem.search_files",
+          ]
         action: allow
       - tools: ["*"]
         action: deny
 ```
 
-### 4. Plug into your agent
+### 4. Plug it into your agent
 
 **Claude Code:**
+
 ```bash
 claude mcp add agent-mesh -- ./agent-mesh --mcp --config policies.yaml
-# Done. Claude now sees filesystem tools, but can only read — not write or delete.
 ```
 
-**Cursor:** add to `.cursor/mcp.json`
+Claude now sees the filesystem tools through Agent Mesh, but only within the policy you defined.
 
-**HTTP agents (LangChain, CrewAI, custom):**
+**Cursor:** add Agent Mesh to `.cursor/mcp.json`.
+
+**HTTP agents:**
+
 ```bash
 ./agent-mesh --config policies.yaml --port 9090
-# Agents call http://localhost:9090/tool/{name} instead of the real backend
 ```
 
-### 5. See what happened
+Then point your agents to `http://localhost:9090/tool/{name}`.
+
+### 5. Inspect traces
 
 ```bash
 curl http://localhost:9090/traces | jq
 ```
 
-### Run tests
-
-```bash
-go test ./...
-```
-
 ## The 3 modes
 
-Agent Mesh has 3 distinct operations that can be **combined freely**:
+Agent Mesh has three composable operations:
 
 ```
 ┌─────────────────────────────────────────────────────────┐
 │                     agent-mesh                          │
 │                                                         │
-│  ┌─────────────┐     ┌──────────┐     ┌─────────────┐  │
+│  ┌──���──────────┐     ┌──────────┐     ┌───��─────────┐  │
 │  │ IMPORT      │     │          │     │ EXPORT      │  │
-│  │ OpenAPI     │────▶│ Registry │────▶│ MCP server  │  │
+��  │ OpenAPI     │────▶│ Registry ���────▶│ MCP server  │  │
 │  │ (Swagger)   │     │ (tools)  │     │ (stdio)     │  │
 │  └─────────────┘     │          │     └──────┬──────┘  │
-│  ┌─────────────┐     │          │            │         │
+│  ┌────────────��┐     │          │            │         │
 │  │ IMPORT      │────▶│          │            ▼         │
 │  │ MCP servers │     │          │     Claude, Cursor,  │
 │  │ (upstream)  │     └──────────┘     any MCP client   │
-│  └─────────────┘          │                            │
+│  └───────��─────┘          │                            │
 │                     policy · trace                      │
-└─────────────────────────────────────────────────────────┘
+└────���────────────────────────────────────────────────────┘
 ```
 
-### Import OpenAPI — Turn a REST API into governed tools
+### 1. Import OpenAPI
 
-Parse a Swagger/OpenAPI spec, register each endpoint as a tool, and proxy calls to the real API.
+Turn a REST API into governed tools.
 
-**Use case**: You have an existing REST API and want agents to call it with governance.
+**Use case:** you have an existing REST API and want agents to call it safely.
 
 ```bash
 ./agent-mesh --openapi https://petstore.swagger.io/v2/swagger.json
-
-# What happens:
-# Swagger spec → parsed → 20 tools registered (get_pet_by_id, add_pet, etc.)
-# Agents call agent-mesh, which forwards to the real Petstore API
 ```
 
+What happens:
+
+- the OpenAPI spec is parsed
+- each endpoint is registered as a tool
+- calls are proxied to the real backend
+- policies and traces are applied uniformly
+
 ```bash
-# List discovered tools
 curl http://localhost:9090/tools | jq
 
-# Call a tool (agent-mesh forwards to the real API)
 curl -X POST http://localhost:9090/tool/get_pet_by_id \
   -H "Authorization: Bearer support-bot" \
   -d '{"params": {"petId": 1}}' | jq
 
-# Denied by policy
 curl -X POST http://localhost:9090/tool/delete_pet \
   -H "Authorization: Bearer support-bot" \
   -d '{"params": {"petId": 1}}' | jq
 ```
 
-### Import MCP — Connect to upstream MCP servers
+### 2. Import MCP
 
-Connect to existing MCP servers (filesystem, GitHub, databases, etc.), discover their tools, and add governance on top.
+Connect to upstream MCP servers, discover their tools, and add governance on top.
 
-**Use case**: You use MCP servers but need policy control and tracing.
+**Use case:** you already use MCP servers, but need policy control and tracing.
 
 ```yaml
-# policies.yaml
 port: 9090
 
 mcp_servers:
@@ -280,6 +340,7 @@ policies:
         action: allow
       - tools: ["filesystem.write_file"]
         action: deny
+
   - name: default
     agent: "*"
     rules:
@@ -289,53 +350,59 @@ policies:
 
 ```bash
 ./agent-mesh --config policies.yaml
-
-# What happens:
-# agent-mesh launches the MCP server subprocess
-# Handshake → discovers 14 tools (read_file, write_file, etc.)
-# Tools registered as filesystem.read_file, filesystem.write_file, etc.
 ```
 
-```bash
-# List connected MCP servers + status
-curl http://localhost:9090/mcp-servers | jq
+What happens:
 
-# List all tools (namespaced: server.tool)
+- Agent Mesh launches the MCP subprocess
+- performs the handshake
+- discovers upstream tools
+- registers them as namespaced tools such as `filesystem.read_file`
+- applies policy and trace to every call
+
+```bash
+curl http://localhost:9090/mcp-servers | jq
 curl http://localhost:9090/tools | jq
 
-# Call an MCP tool through the governance pipeline
 curl -X POST http://localhost:9090/tool/filesystem.read_file \
   -H "Authorization: Bearer claude" \
   -d '{"params": {"path": "/tmp/test.txt"}}' | jq
 ```
 
-### Export MCP — Expose everything as an MCP server
+### 3. Export MCP
 
-Agent-mesh exposes all its tools (from any source) as an MCP server via stdio JSON-RPC. This makes it pluggable into Claude Code, Cursor, or any MCP client.
+Expose all governed tools as an MCP server over stdio JSON-RPC.
 
-**Use case**: You want Claude or Cursor to use a REST API (or governed MCP tools) natively.
+**Use case:** you want Claude Code or Cursor to use REST APIs or governed tools through a normal MCP interface.
 
 ```bash
-# A REST API, re-exposed as MCP for Claude
 ./agent-mesh --mcp --openapi https://petstore.swagger.io/v2/swagger.json
+```
 
-# Register in Claude Code
+Register it in Claude Code:
+
+```bash
 claude mcp add agent-mesh -- ./agent-mesh --mcp --config policies.yaml
 ```
 
 ```
-What happens:
-  Petstore (REST)  →  Import OpenAPI  →  registry  →  Export MCP  →  Claude
-                                              ↓
-                                      policy + trace on every call
+Petstore (REST) → Import OpenAPI → Registry → Export MCP → Claude
+                                        ↓
+                                 policy + trace
 ```
 
-### Combining all 3
+### Combining modes
 
-All modes work together. Import from multiple sources, apply unified policies, and optionally re-export as MCP:
+All modes can be combined.
+
+You can:
+
+- import REST APIs
+- import MCP servers
+- apply one policy engine
+- expose the resulting unified tool surface over HTTP or MCP
 
 ```yaml
-# policies.yaml — mixed REST + MCP sources
 port: 9090
 
 mcp_servers:
@@ -348,50 +415,42 @@ policies:
   - name: claude-agent
     agent: "claude"
     rules:
-      # REST tools (from Petstore OpenAPI)
       - tools: ["get_pet_by_id", "find_pets_by_status"]
         action: allow
-      # MCP tools (from filesystem server)
       - tools: ["filesystem.read_file", "filesystem.list_directory"]
         action: allow
-      # Everything else denied
       - tools: ["*"]
         action: deny
 ```
 
+HTTP mode:
+
 ```bash
-# HTTP mode: REST + MCP in same registry
 ./agent-mesh --config policies.yaml \
   --openapi https://petstore.swagger.io/v2/swagger.json
+```
 
-# MCP mode: same thing, but exposed as MCP server for Claude
+MCP mode:
+
+```bash
 ./agent-mesh --mcp --config policies.yaml \
   --openapi https://petstore.swagger.io/v2/swagger.json
 ```
 
-```
-Petstore API ──Import OpenAPI──▶ ┌──────────┐ ──HTTP proxy──▶ agents (HTTP)
-                                 │ registry  │
-MCP servers  ──Import MCP──────▶ │ (unified) │ ──Export MCP──▶ Claude, Cursor
-                                 └─────┬─────┘
-                                 policy · trace
-```
-
 ## How it works
 
-```
-POST /tool/{tool_name}
-  1. Extract agent ID from Authorization header
-  2. Look up tool in registry (any source: OpenAPI or MCP)
-  3. Evaluate policy (YAML rules → allow / deny / human_approval)
-  4. Forward to backend (HTTP for OpenAPI tools, JSON-RPC for MCP tools)
-  5. Log trace (agent, tool, params, result, policy, latency)
-  6. Return response to agent
-```
+For each call to `POST /tool/{tool_name}`, Agent Mesh:
+
+1. Extracts the agent identity from the request
+2. Looks up the tool in the registry
+3. Evaluates the policy
+4. Forwards to the backend (HTTP for OpenAPI tools, JSON-RPC for MCP tools)
+5. Records a trace
+6. Returns the response
 
 ## Policies
 
-Define who can do what in `policies.yaml`:
+Policies are defined in `policies.yaml`.
 
 ```yaml
 port: 9090
@@ -401,16 +460,10 @@ mcp_servers:
     transport: stdio
     command: npx
     args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
-  # - name: github
-  #   transport: stdio
-  #   command: npx
-  #   args: ["-y", "@modelcontextprotocol/server-github"]
-  #   env:
-  #     GITHUB_TOKEN: "ghp_xxx"
 
 policies:
   - name: support-agent
-    agent: "support-*"          # glob pattern on agent ID
+    agent: "support-*"
     rules:
       - tools: ["get_order", "get_customer"]
         action: allow
@@ -433,128 +486,66 @@ policies:
     agent: "*"
     rules:
       - tools: ["*"]
-        action: deny            # fail closed
+        action: deny
 ```
 
 ### Policy actions
 
 | Action | HTTP code | Behavior |
 |--------|-----------|----------|
-| `allow` | `200` | Forward the call to the backend, return the result |
-| `deny` | `403` | Block the call, no forwarding. Reason included in response |
-| `human_approval` | `202` | Block the call pending human review. Traced as pending |
+| `allow` | `200` | Forward the call to the backend and return the result |
+| `deny` | `403` | Block the call and return a denial reason |
+| `human_approval` | `202` | Mark the call as pending approval |
 
-Default behavior: **fail closed** — if no rule matches, the call is denied.
+Default behavior is **fail closed**: if no rule matches, the call is denied.
 
-### Policy evaluation
+### Evaluation model
 
-Rules are evaluated **in order** (first match wins):
+Rules are evaluated **in order**. First match wins.
 
-1. Find the first policy where `agent` pattern matches the caller
-2. Within that policy, find the first rule where `tools` matches the tool name
-3. If the rule has a `condition`, evaluate it against the call params
-4. If condition passes (or no condition), return the action
-5. If no rule matches anywhere, return `deny` (fail closed)
+1. Find the first policy whose `agent` pattern matches the caller
+2. Within that policy, find the first matching tool rule
+3. If the rule has a `condition`, evaluate it
+4. Return the rule action
+5. If nothing matches, deny
 
 ### Conditions
 
-Conditions allow fine-grained control based on call parameters:
-
 ```yaml
 condition:
-  field: "params.amount"     # dot-path into the request params
-  operator: "<"              # comparison operator
-  value: 500                 # threshold
+  field: "params.amount"
+  operator: "<"
+  value: 500
 ```
 
-Operators: `<`, `<=`, `>`, `>=`, `==`, `!=`
+Supported operators: `<`, `<=`, `>`, `>=`, `==`, `!=`
 
 ### Agent patterns
-
-The `agent` field supports glob patterns:
 
 | Pattern | Matches |
 |---------|---------|
 | `"support-*"` | `support-bot`, `support-agent-1` |
 | `"admin-*"` | `admin-1`, `admin-ops` |
 | `"claude"` | exactly `claude` |
-| `"*"` | any agent (including `anonymous`) |
+| `"*"` | any agent |
 
 ### Tool patterns
 
-The `tools` field is a list of exact tool names, or `"*"` for all:
-
 ```yaml
-- tools: ["get_order", "get_customer"]    # specific tools
-- tools: ["filesystem.read_file"]          # namespaced MCP tool
-- tools: ["*"]                             # all tools
+- tools: ["get_order", "get_customer"]     # specific tools
+- tools: ["filesystem.read_file"]           # namespaced MCP tool
+- tools: ["*"]                              # all tools
 ```
 
 ## API
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/tool/{name}` | Proxy a tool call through policies |
-| `GET` | `/tools` | List all registered tools (OpenAPI + MCP) |
-| `GET` | `/mcp-servers` | List connected upstream MCP servers + status |
+| `POST` | `/tool/{name}` | Proxy a tool call through policy evaluation |
+| `GET` | `/tools` | List all registered tools |
+| `GET` | `/mcp-servers` | List connected upstream MCP servers |
 | `GET` | `/traces` | Query trace history (`?agent=...&tool=...`) |
-| `GET` | `/health` | Health check + stats |
-
-## Architecture
-
-```
-agent-mesh/
-├── main.go                # Entry point, wires everything
-├── config/
-│   └── config.go          # YAML config + policy + MCP server definitions
-├── registry/
-│   ├── registry.go        # Tool/Param types, Registry (Get/All/Remove)
-│   ├── openapi.go         # Import OpenAPI → tool catalog
-│   └── mcp.go             # Import MCP → tool catalog
-├── policy/
-│   └── engine.go          # Rule evaluation engine
-├── proxy/
-│   └── handler.go         # HTTP proxy (auth → policy → forward → trace)
-├── mcp/
-│   ├── server.go          # Export MCP (stdio JSON-RPC server)
-│   ├── client.go          # Import MCP (connect to upstream servers)
-│   └── manager.go         # Manages N upstream MCP connections
-├── trace/
-│   └── store.go           # In-memory trace store
-└── policies.yaml          # Example policies
-```
-
-## Tests
-
-Tests live next to source files (`*_test.go`), following Go conventions:
-
-```bash
-# Run all tests
-go test ./...
-
-# Run with race detector
-go test ./... -race
-
-# Run tests verbose
-go test ./... -v
-
-# Run a specific package
-go test ./proxy/ -v
-
-# Run a specific test
-go test ./policy/ -run TestEvaluateMCPNamespacedTools -v
-```
-
-Coverage (49 tests):
-
-| Package | Tests | Covers |
-|---------|-------|--------|
-| `config` | 5 | YAML parsing, defaults, `mcp_servers`, conditions |
-| `registry` | 10 | CRUD, MCP loading, namespacing, mixed sources, concurrent access |
-| `policy` | 8 | allow/deny, conditions, wildcards, fail closed, MCP tools |
-| `proxy` | 17 | REST + MCP tool calls, deny/error/approval, all endpoints, URL encoding |
-| `trace` | 6 | record, filters, limit, eviction, stats |
-| `mcp` | 13 | client lifecycle, timeouts, goroutine cleanup, manager concurrent access |
+| `GET` | `/health` | Health check and stats |
 
 ## CLI
 
@@ -566,12 +557,12 @@ Coverage (49 tests):
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--config` | `policies.yaml` | Path to config/policies YAML |
-| `--openapi` | | OpenAPI spec URL (Import OpenAPI) |
-| `--backend` | | Backend base URL (overrides spec) |
+| `--config` | `policies.yaml` | Path to YAML config |
+| `--openapi` | | OpenAPI spec URL |
+| `--backend` | | Backend base URL override |
 | `--port` | from config or `9090` | Port override |
-| `--mcp` | `false` | Export MCP mode (stdio JSON-RPC server) |
-| `--mcp-agent` | `claude` | Agent ID for MCP mode policy evaluation |
+| `--mcp` | `false` | Export MCP mode |
+| `--mcp-agent` | `claude` | Agent ID used for MCP-mode policy evaluation |
 
 ### Discover command
 
@@ -581,27 +572,75 @@ Coverage (49 tests):
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--config` | | Config YAML with MCP servers to discover |
-| `--openapi` | | OpenAPI spec URL to discover |
-| `--backend` | | Backend base URL (overrides spec) |
-| `--generate-policy` | `false` | Generate a suggested policy (read-only defaults) |
+| `--config` | | Config YAML containing MCP servers |
+| `--openapi` | | OpenAPI spec URL to inspect |
+| `--backend` | | Backend base URL override |
+| `--generate-policy` | `false` | Generate a suggested policy with read-only defaults |
+
+## Project structure
+
+```
+agent-mesh/
+├── main.go                # Entry point, wires everything
+├── discover.go            # Discover subcommand
+├── config/
+│   └── config.go          # YAML config + policy + MCP server definitions
+├── registry/
+│   ├── registry.go        # Tool/Param types, Registry (Get/All/Remove)
+│   ├── openapi.go         # Import OpenAPI → tool catalog
+│   └── mcp.go             # Import MCP → tool catalog
+├─��� policy/
+│   └── engine.go          # Rule evaluation engine
+���── proxy/
+│   └── handler.go         # HTTP proxy (auth → policy → forward → trace)
+├── mcp/
+│   ├── server.go          # Export MCP (stdio JSON-RPC server)
+│   ├── client.go          # Import MCP (connect to upstream servers)
+│   └── manager.go         # Manages N upstream MCP connections
+├── trace/
+│   └─�� store.go           # In-memory trace store
+└── policies.yaml          # Example policies
+```
+
+## Tests
+
+Tests live next to source files, following normal Go conventions.
+
+```bash
+go test ./...                                          # Run all tests
+go test ./... -race                                    # Run with race detector
+go test ./... -v                                       # Run verbose
+go test ./proxy/ -v                                    # Run one package
+go test ./policy/ -run TestEvaluateMCPNamespacedTools -v  # Run one test
+```
+
+Coverage (49 tests):
+
+| Package | Tests | Covers |
+|---------|-------|--------|
+| `config` | 5 | YAML parsing, defaults, MCP servers, conditions |
+| `registry` | 10 | CRUD, loading, namespacing, mixed sources, concurrent access |
+| `policy` | 8 | Allow/deny, conditions, wildcards, fail-closed behavior |
+| `proxy` | 17 | REST and MCP calls, deny/error/approval flows, endpoints |
+| `trace` | 6 | Record, filter, limit, eviction, stats |
+| `mcp` | 13 | Client lifecycle, timeouts, cleanup, concurrent manager access |
 
 ## Roadmap
 
-- [x] Import OpenAPI (REST API → governed tools)
-- [x] Import MCP (upstream MCP servers → governed tools)
-- [x] Discover command with policy generation
-- [x] Export MCP (expose tools as MCP server)
-- [x] Policy engine (allow/deny/human_approval + conditions)
+- [x] Import OpenAPI
+- [x] Import MCP
+- [x] Export MCP
+- [x] Policy engine
 - [x] Trace store with query API
-- [x] `GET /mcp-servers` endpoint
+- [x] `/mcp-servers` endpoint
 - [x] Graceful shutdown
+- [x] Discover command with policy generation
 - [ ] SSE transport for Import MCP
-- [ ] Agent credential format (JWT with scopes + budget)
-- [ ] AsyncAPI support (event-driven tools via Kafka)
-- [ ] OpenTelemetry trace export
+- [ ] Agent credential format (JWT with scopes and budget)
+- [ ] AsyncAPI support
+- [ ] OpenTelemetry export
 - [ ] Rate limiting per agent
-- [ ] Cost tracking (token budget enforcement)
+- [ ] Cost tracking / token budget enforcement
 - [ ] Dashboard UI
 - [ ] Persistent trace store (PostgreSQL)
 
