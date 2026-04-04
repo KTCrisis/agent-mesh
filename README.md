@@ -1,12 +1,14 @@
 # Agent Mesh
 
-**The Envoy of AI agents.** A lightweight sidecar proxy that sits between AI agents and backend systems (REST APIs, MCP servers), adding policy enforcement, observability, and access control — without changing agent code.
+**Guardrails for AI agents.** An open-source tool that adds policy control and tracing to any AI agent's tool calls — MCP servers, REST APIs, CLI tools, skills — without changing the agent code.
+
+One binary. One YAML config. Works with Claude Code, Cursor, LangChain, CrewAI, or any agent that uses HTTP or MCP.
 
 ```
 Without Agent Mesh:          With Agent Mesh:
-Agent → API                  Agent → Sidecar → API / MCP servers
-(ungoverned)                          ↓
-                              auth · policy · trace
+Agent → Tools                Agent → agent-mesh → Tools
+(no control)                         ↓
+                              policy · trace · control
 ```
 
 ## The problem
@@ -110,7 +112,20 @@ You have existing REST APIs (with OpenAPI/Swagger specs) and want agents to use 
 
 ## Why agent-mesh
 
-- **Framework agnostic** — works with Claude Code, Cursor, LangChain, CrewAI, raw HTTP, anything
+Agent-mesh is **not** an API gateway (Kong), **not** an agent platform (LangChain), **not** an MCP hosting service (Cloudflare). It's a simple, open-source tool that any developer can install in minutes to add control over their agents' tool calls.
+
+Think of it as **ESLint for agent actions** — lightweight, runs locally, config as code, catches problems before they happen.
+
+| What it is | What it is NOT |
+|------------|----------------|
+| A policy layer for tool calls | An API gateway |
+| A lightweight local binary | A cloud platform |
+| A governance sidecar | An agent framework |
+| Config-as-code (YAML) | A dashboard you have to manage |
+
+- **For any developer** — install in 2 minutes, one binary, one YAML file
+- **For any agent** — works with Claude Code, Cursor, LangChain, CrewAI, raw HTTP, anything
+- **For any tool** — MCP servers, REST APIs, CLI tools, skills
 - **Zero agent code change** — the agent calls agent-mesh instead of the real backend. That's it
 - **Policy as code** — YAML rules, versionable in git, reviewable in PRs
 - **Fail closed** — no matching policy = denied
@@ -119,11 +134,57 @@ You have existing REST APIs (with OpenAPI/Swagger specs) and want agents to use 
 
 ## Quick start
 
-```bash
-# Build
-go build -o agent-mesh .
+### 1. Build
 
-# Run all tests
+```bash
+go build -o agent-mesh .
+```
+
+### 2. Write a policy
+
+```yaml
+# policies.yaml
+mcp_servers:
+  - name: filesystem
+    transport: stdio
+    command: npx
+    args: ["-y", "@modelcontextprotocol/server-filesystem", "/home/me/projects"]
+
+policies:
+  - name: safe-mode
+    agent: "*"
+    rules:
+      - tools: ["filesystem.read_file", "filesystem.list_directory", "filesystem.search_files"]
+        action: allow
+      - tools: ["*"]
+        action: deny
+```
+
+### 3. Plug into your agent
+
+**Claude Code:**
+```bash
+claude mcp add agent-mesh -- ./agent-mesh --mcp --config policies.yaml
+# Done. Claude now sees filesystem tools, but can only read — not write or delete.
+```
+
+**Cursor:** add to `.cursor/mcp.json`
+
+**HTTP agents (LangChain, CrewAI, custom):**
+```bash
+./agent-mesh --config policies.yaml --port 9090
+# Agents call http://localhost:9090/tool/{name} instead of the real backend
+```
+
+### 4. See what happened
+
+```bash
+curl http://localhost:9090/traces | jq
+```
+
+### Run tests
+
+```bash
 go test ./...
 ```
 
