@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"strings"
 	"sync"
 	"time"
 )
@@ -115,12 +116,14 @@ var (
 )
 
 // Resolve sets the status of a pending approval and unblocks the handler.
+// Supports prefix matching: if id is not an exact match, it tries to find
+// a unique entry whose ID starts with the given prefix.
 func (s *Store) Resolve(id string, status Status, resolvedBy string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	pa, ok := s.pending[id]
-	if !ok {
+	pa := s.findLocked(id)
+	if pa == nil {
 		return ErrNotFound
 	}
 	if pa.Status != StatusPending {
@@ -149,11 +152,31 @@ func (s *Store) Deny(id, resolvedBy string) error {
 	return s.Resolve(id, StatusDenied, resolvedBy)
 }
 
-// Get returns a pending approval by ID, or nil if not found.
+// Get returns a pending approval by ID or prefix, or nil if not found.
 func (s *Store) Get(id string) *PendingApproval {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.pending[id]
+	return s.findLocked(id)
+}
+
+// findLocked finds an approval by exact ID or unique prefix match.
+// Caller must hold s.mu (read or write).
+func (s *Store) findLocked(id string) *PendingApproval {
+	// Exact match first
+	if pa, ok := s.pending[id]; ok {
+		return pa
+	}
+	// Prefix match — must be unique
+	var match *PendingApproval
+	for key, pa := range s.pending {
+		if strings.HasPrefix(key, id) {
+			if match != nil {
+				return nil // ambiguous prefix
+			}
+			match = pa
+		}
+	}
+	return match
 }
 
 // List returns all approvals (pending + resolved), most recent first.

@@ -152,6 +152,43 @@ func TestConcurrentResolve(t *testing.T) {
 	}
 }
 
+func TestPrefixMatch(t *testing.T) {
+	s := NewStore(5 * time.Second)
+	pa := s.Submit("claude", "write_file", "r", nil)
+
+	// Prefix match
+	prefix := pa.ID[:8]
+	got := s.Get(prefix)
+	if got == nil {
+		t.Fatalf("Get(%q) returned nil, want match", prefix)
+	}
+	if got.ID != pa.ID {
+		t.Errorf("got ID %q, want %q", got.ID, pa.ID)
+	}
+
+	// Approve by prefix
+	if err := s.Approve(prefix, "tester"); err != nil {
+		t.Fatalf("Approve by prefix: %v", err)
+	}
+
+	res := <-pa.Result
+	if res.Status != StatusApproved {
+		t.Errorf("status = %q, want approved", res.Status)
+	}
+}
+
+func TestPrefixMatchAmbiguous(t *testing.T) {
+	s := NewStore(5 * time.Second)
+	s.Submit("a", "t", "r", nil)
+	s.Submit("b", "t", "r", nil)
+
+	// Single char prefix — likely ambiguous
+	got := s.Get("")
+	if got != nil {
+		t.Error("empty prefix should return nil (ambiguous)")
+	}
+}
+
 func TestDefaultTimeout(t *testing.T) {
 	s := NewStore(0)
 	if s.Timeout() != 5*time.Minute {
