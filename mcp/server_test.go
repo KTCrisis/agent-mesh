@@ -264,7 +264,7 @@ func TestServerToolsCallMissingName(t *testing.T) {
 	}
 }
 
-// --- Approval tests (non-blocking flow) ---
+// --- Approval tests (blocking flow — resolved via goroutine or HTTP API) ---
 
 func approvalServer() *Server {
 	reg := registry.New()
@@ -304,11 +304,44 @@ func extractText(t *testing.T, resp rpcResponse) string {
 	return text
 }
 
-func TestServerApprovalReturnsImmediately(t *testing.T) {
-	s := approvalServer()
+// sendRPCAsync starts Serve in a goroutine and returns responses via channel.
+// Needed because the blocking approval flow holds Serve until resolved.
+func sendRPCAsync(t *testing.T, s *Server, requests ...rpcRequest) <-chan []rpcResponse {
+	t.Helper()
+	ch := make(chan []rpcResponse, 1)
 
-	// Calling a tool that requires approval should return immediately (non-blocking)
-	responses := sendRPC(t, s, rpcRequest{
+	var input bytes.Buffer
+	for _, req := range requests {
+		data, _ := json.Marshal(req)
+		input.Write(data)
+		input.WriteByte('\n')
+	}
+
+	go func() {
+		var output bytes.Buffer
+		if err := s.Serve(&input, &output); err != nil {
+			t.Errorf("Serve: %v", err)
+		}
+		var responses []rpcResponse
+		decoder := json.NewDecoder(&output)
+		for {
+			var resp rpcResponse
+			if err := decoder.Decode(&resp); err != nil {
+				break
+			}
+			responses = append(responses, resp)
+		}
+		ch <- responses
+	}()
+
+	return ch
+}
+
+func TestServerApprovalBlocksAndTimesOut(t *testing.T) {
+	s := approvalServer()
+	s.Approvals = approval.NewStore(500 * time.Millisecond) // short timeout for test
+
+	ch := sendRPCAsync(t, s, rpcRequest{
 		JSONRPC: "2.0", ID: float64(1), Method: "tools/call",
 		Params: map[string]any{
 			"name":      "risky_tool",
@@ -316,56 +349,47 @@ func TestServerApprovalReturnsImmediately(t *testing.T) {
 		},
 	})
 
+	responses := <-ch
 	if len(responses) != 1 {
 		t.Fatalf("responses = %d, want 1", len(responses))
 	}
 
 	text := extractText(t, responses[0])
-	if !strings.Contains(text, "Approval required") {
-		t.Errorf("expected 'Approval required', got: %s", text)
-	}
-	if !strings.Contains(text, "approval.resolve") {
-		t.Errorf("expected instructions for approval.resolve, got: %s", text)
-	}
-
-	// Should have one pending approval
-	pending := s.Approvals.ListPending()
-	if len(pending) != 1 {
-		t.Fatalf("pending = %d, want 1", len(pending))
+	if !strings.Contains(text, "timed out") {
+		t.Errorf("expected 'timed out', got: %s", text)
 	}
 }
 
 func TestServerApprovalResolveApprove(t *testing.T) {
 	s := approvalServer()
 
-	// Step 1: trigger approval
-	responses := sendRPC(t, s, rpcRequest{
+	ch := sendRPCAsync(t, s, rpcRequest{
 		JSONRPC: "2.0", ID: float64(1), Method: "tools/call",
 		Params: map[string]any{
 			"name":      "risky_tool",
 			"arguments": map[string]any{},
 		},
 	})
-	text := extractText(t, responses[0])
-	if !strings.Contains(text, "Approval required") {
-		t.Fatalf("expected approval prompt, got: %s", text)
-	}
 
-	pending := s.Approvals.ListPending()
+	// Wait for the approval to appear in the store
+	var pending []*approval.PendingApproval
+	for i := 0; i < 50; i++ {
+		pending = s.Approvals.ListPending()
+		if len(pending) == 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	if len(pending) != 1 {
 		t.Fatalf("pending = %d, want 1", len(pending))
 	}
-	shortID := pending[0].ID[:8]
 
-	// Step 2: approve via virtual tool
-	responses = sendRPC(t, s, rpcRequest{
-		JSONRPC: "2.0", ID: float64(2), Method: "tools/call",
-		Params: map[string]any{
-			"name":      "approval.resolve",
-			"arguments": map[string]any{"id": shortID, "decision": "approve"},
-		},
-	})
+	// Approve via the store (simulates HTTP API / mesh CLI)
+	if err := s.Approvals.Approve(pending[0].ID, "test:unit"); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
 
+	responses := <-ch
 	if len(responses) != 1 {
 		t.Fatalf("responses = %d, want 1", len(responses))
 	}
@@ -383,8 +407,7 @@ func TestServerApprovalResolveApprove(t *testing.T) {
 func TestServerApprovalResolveDeny(t *testing.T) {
 	s := approvalServer()
 
-	// Step 1: trigger approval
-	sendRPC(t, s, rpcRequest{
+	ch := sendRPCAsync(t, s, rpcRequest{
 		JSONRPC: "2.0", ID: float64(1), Method: "tools/call",
 		Params: map[string]any{
 			"name":      "risky_tool",
@@ -392,21 +415,32 @@ func TestServerApprovalResolveDeny(t *testing.T) {
 		},
 	})
 
-	pending := s.Approvals.ListPending()
-	shortID := pending[0].ID[:8]
+	// Wait for approval to appear
+	var pending []*approval.PendingApproval
+	for i := 0; i < 50; i++ {
+		pending = s.Approvals.ListPending()
+		if len(pending) == 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("pending = %d, want 1", len(pending))
+	}
 
-	// Step 2: deny
-	responses := sendRPC(t, s, rpcRequest{
-		JSONRPC: "2.0", ID: float64(2), Method: "tools/call",
-		Params: map[string]any{
-			"name":      "approval.resolve",
-			"arguments": map[string]any{"id": shortID, "decision": "deny"},
-		},
-	})
+	// Deny via the store
+	if err := s.Approvals.Deny(pending[0].ID, "test:unit"); err != nil {
+		t.Fatalf("deny: %v", err)
+	}
+
+	responses := <-ch
+	if len(responses) != 1 {
+		t.Fatalf("responses = %d, want 1", len(responses))
+	}
 
 	text := extractText(t, responses[0])
-	if !strings.Contains(text, "Denied") {
-		t.Errorf("expected 'Denied', got: %s", text)
+	if !strings.Contains(text, "denied") || !strings.Contains(text, "test:unit") {
+		t.Errorf("expected denial by test:unit, got: %s", text)
 	}
 }
 
@@ -426,8 +460,10 @@ func TestServerApprovalPendingList(t *testing.T) {
 		t.Errorf("expected 'No pending', got: %s", text)
 	}
 
-	// Trigger an approval
-	sendRPC(t, s, rpcRequest{
+	// Trigger an approval (blocking) — resolve quickly so sendRPC returns
+	s2 := approvalServer()
+	s2.Approvals = approval.NewStore(300 * time.Millisecond)
+	ch := sendRPCAsync(t, s2, rpcRequest{
 		JSONRPC: "2.0", ID: float64(2), Method: "tools/call",
 		Params: map[string]any{
 			"name":      "risky_tool",
@@ -435,18 +471,23 @@ func TestServerApprovalPendingList(t *testing.T) {
 		},
 	})
 
-	// Now should have 1 pending
-	responses = sendRPC(t, s, rpcRequest{
-		JSONRPC: "2.0", ID: float64(3), Method: "tools/call",
-		Params: map[string]any{
-			"name":      "approval.pending",
-			"arguments": map[string]any{},
-		},
-	})
-	text = extractText(t, responses[0])
-	if !strings.Contains(text, "risky_tool") {
-		t.Errorf("expected 'risky_tool' in pending list, got: %s", text)
+	// Wait for it to appear
+	for i := 0; i < 50; i++ {
+		if len(s2.Approvals.ListPending()) == 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
+	pending := s2.Approvals.ListPending()
+	if len(pending) != 1 {
+		t.Fatalf("pending = %d, want 1", len(pending))
+	}
+	if pending[0].Tool != "risky_tool" {
+		t.Errorf("expected risky_tool, got %s", pending[0].Tool)
+	}
+
+	// Let it timeout so the goroutine finishes
+	<-ch
 }
 
 func TestServerApprovalResolveNotFound(t *testing.T) {

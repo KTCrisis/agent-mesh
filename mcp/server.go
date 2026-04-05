@@ -293,7 +293,7 @@ func (s *Server) handleToolsCall(params map[string]any) (any, *rpcError) {
 			}, nil
 		}
 
-		// No TTY available — return immediately with approval ID (non-blocking)
+		// No TTY available — block on approval store, resolve via HTTP API or mesh CLI
 		if s.Approvals == nil {
 			s.Traces.Record(entry)
 			return map[string]any{
@@ -309,17 +309,61 @@ func (s *Server) handleToolsCall(params map[string]any) (any, *rpcError) {
 		pending.TraceID = entry.TraceID
 
 		shortID := pending.ID[:8]
-		slog.Info("MCP approval submitted (non-blocking)",
-			"approval_id", pending.ID, "agent", s.AgentID, "tool", toolName)
+		slog.Info("awaiting human approval (blocking)",
+			"approval_id", shortID, "agent", s.AgentID, "tool", toolName,
+			"resolve_via", fmt.Sprintf("mesh approve %s OR POST /approvals/%s/approve", shortID, shortID))
 
-		return map[string]any{
-			"content": []map[string]any{
-				{"type": "text", "text": fmt.Sprintf(
-					"⏳ Approval required.\n  ID: %s\n  Tool: %s\n  Agent: %s\n\nUse approval.resolve with {\"id\": \"%s\", \"decision\": \"approve\"} or {\"id\": \"%s\", \"decision\": \"deny\"}.",
-					shortID, toolName, s.AgentID, shortID, shortID,
-				)},
-			},
-		}, nil
+		// Block until approved, denied, or timeout — HTTP API (:port) handles resolution
+		start := time.Now()
+		resolution := <-pending.Result
+		approvalMs := time.Since(start).Milliseconds()
+
+		s.Traces.Update(entry.TraceID, func(e *trace.Entry) {
+			e.ApprovalStatus = string(resolution.Status)
+			e.ApprovedBy = resolution.ResolvedBy
+			e.ApprovalMs = approvalMs
+		})
+
+		switch resolution.Status {
+		case approval.StatusApproved:
+			slog.Info("approval granted", "approval_id", shortID, "by", resolution.ResolvedBy, "ms", approvalMs)
+			result, statusCode, err := s.Handler.Forward(tool, arguments)
+			s.Traces.Update(entry.TraceID, func(e *trace.Entry) {
+				e.StatusCode = statusCode
+				if err != nil {
+					e.Error = err.Error()
+				}
+			})
+			if err != nil {
+				return map[string]any{
+					"content": []map[string]any{
+						{"type": "text", "text": fmt.Sprintf("Backend error: %s", err.Error())},
+					},
+				}, nil
+			}
+			resultJSON, _ := json.MarshalIndent(result, "", "  ")
+			return map[string]any{
+				"content": []map[string]any{
+					{"type": "text", "text": string(resultJSON)},
+				},
+			}, nil
+
+		case approval.StatusDenied:
+			slog.Info("approval denied", "approval_id", shortID, "by", resolution.ResolvedBy, "ms", approvalMs)
+			return map[string]any{
+				"content": []map[string]any{
+					{"type": "text", "text": fmt.Sprintf("Approval denied by %s", resolution.ResolvedBy)},
+				},
+			}, nil
+
+		default: // timeout
+			slog.Warn("approval timed out", "approval_id", shortID, "ms", approvalMs)
+			return map[string]any{
+				"content": []map[string]any{
+					{"type": "text", "text": fmt.Sprintf("Approval timed out after %ds", approvalMs/1000)},
+				},
+			}, nil
+		}
 	}
 
 	// Forward to backend
@@ -500,6 +544,14 @@ func (s *Server) writeResponse(w io.Writer, resp rpcResponse) {
 // Returns (approved *bool, resolvedBy string). If TTY is unavailable, returns (nil, "").
 func (s *Server) promptTTY(toolName string, params map[string]any) (*bool, string) {
 	if runtime.GOOS == "windows" {
+		return nil, ""
+	}
+
+	// Skip TTY prompt when stdin is a pipe (MCP stdio mode via Claude Code / agent).
+	// The TTY would open the agent-mesh terminal, not the caller's terminal,
+	// causing an invisible blocking prompt.
+	if fi, err := os.Stdin.Stat(); err == nil && (fi.Mode()&os.ModeCharDevice) == 0 {
+		slog.Debug("stdin is a pipe, skipping TTY prompt — use HTTP API or mesh CLI to approve")
 		return nil, ""
 	}
 
