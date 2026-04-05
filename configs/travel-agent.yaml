@@ -1,0 +1,40 @@
+port: 9091
+trace_file: /home/fluxart/agent-mesh/traces-travel.jsonl
+
+mcp_servers:
+  - name: weather
+    transport: stdio
+    command: npx
+    args: ["-y", "open-meteo-mcp-server"]
+
+  - name: flights
+    transport: stdio
+    command: npx
+    args: ["-y", "google-flights-mcp-server"]
+
+  - name: travel
+    transport: stdio
+    command: npx
+    args: ["-y", "travel-mcp"]
+
+policies:
+  - name: travel-agent
+    agent: "claude"
+    rules:
+      # ── Weather + Geocoding (read-only) ──
+      - tools: ["weather.*"]
+        action: allow
+
+      # ── Flights (search only, no booking) ──
+      - tools: ["flights.*"]
+        action: allow
+
+      # ── Travel utilities (read-only) ──
+      - tools: ["travel.*"]
+        action: allow
+
+  - name: default
+    agent: "*"
+    rules:
+      - tools: ["*"]
+        action: deny
