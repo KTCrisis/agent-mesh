@@ -486,7 +486,7 @@ go test ./proxy/ -v        # One package
 - [ ] JWT agent credentials (scopes + budget)
 - [x] Rate limiting per agent (sliding window + total budget + loop detection)
 - [ ] Temporal grants (`mesh grant` — sudo for agents)
-- [ ] Async HTTP approval (202 + poll)
+- [x] Async approval (202 + poll via MCP virtual tools, HTTP API)
 - [ ] Supervisor agent protocol
 - [ ] OpenTelemetry trace export
 - [ ] Dashboard UI
