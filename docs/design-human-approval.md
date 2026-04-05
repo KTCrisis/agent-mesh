@@ -281,9 +281,43 @@ This is optional. Agents that don't set the header use polling. Agents that do g
 
 ## Approval Channels
 
-The resolution signal (`Approve`/`Deny`) can come from multiple sources. Agent-mesh exposes these in priority order:
+The resolution signal (`Approve`/`Deny`) can come from multiple sources. Agent-mesh tries them in cascade — the first available channel wins:
 
-### 1. HTTP API (always available)
+| # | Channel | Context | Friction | How it works |
+|---|---------|---------|----------|-------------|
+| **1** | **TTY prompt** | MCP mode, interactive terminal (Claude Code, Cursor) | Lowest — type `a` + enter | Prompt via `/dev/tty`, bypasses stdin/stdout used by JSON-RPC |
+| **2** | **CLI (`mesh`)** | Second terminal, `mesh watch` or `mesh approve <id>` | Low — one command | Polls HTTP API, interactive or one-shot |
+| **3** | **HTTP API** | Autonomous agents, scripts, webhooks, CI | None (programmatic) | `POST /approvals/{id}/approve` |
+
+The cascade:
+1. **TTY available?** → prompt inline, resolve immediately, no approval store needed
+2. **No TTY, approval store configured?** → block handler, wait for resolution via HTTP API
+3. **No TTY, no store?** → return static "approval required" message (fallback)
+
+### 1. TTY Prompt (MCP mode, interactive)
+
+When agent-mesh runs as an MCP server in a terminal (e.g., Claude Code), it prompts the user directly via `/dev/tty` — the same technique `sudo` uses to read passwords when stdin is piped.
+
+```
+Claude calls filesystem.write_file →
+
+  >> APPROVAL REQUIRED
+     agent: claude
+     tool:  filesystem.write_file
+     path: /home/user/project/main.go
+     content: package main...
+
+     [a]pprove / [d]eny ? a
+     Approved
+
+→ tool call completes, Claude gets the result
+```
+
+The user types `a` + enter. The MCP response is held until the prompt resolves — Claude Code sees a slow tool call, nothing else. No second terminal, no HTTP call, no context switching.
+
+Falls back to approval store when `/dev/tty` is not available (CI, Docker, piped I/O).
+
+### 2. HTTP API (always available)
 
 New endpoints on the existing admin port:
 
@@ -317,54 +351,30 @@ GET /approvals
 ]
 ```
 
-### 2. CLI (`mesh` subcommands)
+### 3. CLI (`mesh` subcommands)
 
-Thin wrapper over the HTTP API. Runs in a separate terminal.
+Thin wrapper over the HTTP API. Runs in a separate terminal. Supports prefix matching on approval IDs (8 chars is enough).
 
 ```bash
-# List pending
-mesh pending
-# ID        AGE    AGENT   TOOL                     TIMEOUT
-# a1b2c3d4  12s    claude  filesystem.write_file     4m48s
-# e5f6g7h8  3s     claude  gmail.gmail_send_email    4m57s
+# One-shot commands
+mesh pending                    # List pending approvals
+mesh show a1b2c3d4              # Full details with params
+mesh approve a1b2c3d4           # Approve by ID prefix
+mesh deny e5f6g7h8              # Deny by ID prefix
 
-# Approve with context
-mesh show a1b2c3d4
-# Agent:   claude
-# Tool:    filesystem.write_file
-# Params:
-#   path:    /home/user/important.txt
-#   content: "human approval test — agent-mesh sidecar proxy"
-# Policy:  claude / rule #3
-
-mesh approve a1b2c3d4
-# Approved: a1b2c3d4 (filesystem.write_file)
-
-mesh deny e5f6g7h8
-# Denied: e5f6g7h8 (gmail.gmail_send_email)
-
-# Approve all pending (with confirmation)
-mesh approve --all
-# 2 pending approvals. Approve all? [y/N] y
-# Approved: a1b2c3d4 (filesystem.write_file)
-# Approved: e5f6g7h8 (gmail.gmail_send_email)
-```
-
-### 3. TUI (`mesh watch`)
-
-Live terminal UI showing pending approvals. Interactive approve/deny with `a`/`d` keys. Useful for sessions where many approvals are expected.
-
-```
+# Interactive watch mode — polls every 2s, prompts for each new approval
 mesh watch
-
-  AGENT-MESH APPROVALS                              2 pending
-
-  > a1b2c3d4  claude  filesystem.write_file    12s  [a]pprove [d]eny [v]iew
-    e5f6g7h8  claude  gmail.gmail_send_email    3s  [a]pprove [d]eny [v]iew
-
-  ── resolved ──
-    f9g0h1i2  claude  filesystem.edit_file    APPROVED by cli:marc  45s ago
+# mesh watch — waiting for approvals (ctrl+c to quit)
+#
+# >> NEW  a1b2c3d4  claude  filesystem.write_file
+#         path: /home/user/project/main.go
+#         content: package main...
+#         remaining: 4m58s
+#   [a]pprove / [d]eny / [s]kip ? a
+#   Approved
 ```
+
+`mesh watch` is the recommended way to handle approvals from a second terminal. It shows context and prompts inline — no need to copy-paste IDs.
 
 ### 4. Webhook (outbound notification)
 
