@@ -1,0 +1,23 @@
+{
+  "name": "agent-mesh-plugins",
+  "owner": {
+    "name": "Marc Verchiani",
+    "email": "flux7art@gmail.com"
+  },
+  "metadata": {
+    "description": "Agent Mesh — the Envoy of AI agents",
+    "version": "1.0.0"
+  },
+  "plugins": [
+    {
+      "name": "agent-mesh",
+      "source": "./",
+      "description": "Sidecar proxy with policy enforcement, tracing, and approval for AI agents",
+      "version": "0.3.4",
+      "author": { "name": "Marc Verchiani" },
+      "license": "Apache-2.0",
+      "keywords": ["governance", "proxy", "mcp", "policy"],
+      "category": "infrastructure"
+    }
+  ]
+}
