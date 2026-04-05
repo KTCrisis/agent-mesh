@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -45,6 +46,8 @@ func main() {
 			os.Exit(1)
 		}
 		cmdResolve(os.Args[2], "deny")
+	case "watch":
+		cmdWatch()
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n", os.Args[1])
 		usage()
@@ -60,6 +63,7 @@ commands:
   show <id>            Show approval details
   approve <id>         Approve a pending request
   deny <id>            Deny a pending request
+  watch                Interactive mode — poll and prompt for each approval
 
 env:
   MESH_URL             Agent-mesh URL (default http://localhost:9090)`)
@@ -137,6 +141,99 @@ func cmdShow(id string) {
 			}
 			fmt.Printf("  %s: %s\n", k, s)
 		}
+	}
+}
+
+func cmdWatch() {
+	fmt.Println("mesh watch — waiting for approvals (ctrl+c to quit)")
+	fmt.Println()
+
+	seen := make(map[string]bool)
+	scanner := bufio.NewScanner(os.Stdin)
+
+	for {
+		list := fetchPending()
+
+		for _, a := range list {
+			if seen[a.ID] {
+				continue
+			}
+
+			// Show the new approval
+			fmt.Printf("\033[1;33m>> NEW\033[0m  %s  %s  %s\n", a.ID[:8], a.AgentID, a.Tool)
+			if len(a.Params) > 0 {
+				for k, v := range a.Params {
+					s := fmt.Sprintf("%v", v)
+					if len(s) > 80 {
+						s = s[:80] + "..."
+					}
+					fmt.Printf("        %s: %s\n", k, s)
+				}
+			}
+			fmt.Printf("        remaining: %s\n", a.Remaining)
+
+			// Prompt
+			for {
+				fmt.Printf("  [a]pprove / [d]eny / [s]kip ? ")
+				if !scanner.Scan() {
+					return
+				}
+				input := strings.TrimSpace(strings.ToLower(scanner.Text()))
+
+				switch input {
+				case "a", "approve":
+					resolve(a.ID[:8], "approve")
+					seen[a.ID] = true
+				case "d", "deny":
+					resolve(a.ID[:8], "deny")
+					seen[a.ID] = true
+				case "s", "skip":
+					seen[a.ID] = true
+				default:
+					fmt.Println("  type a, d, or s")
+					continue
+				}
+				break
+			}
+			fmt.Println()
+		}
+
+		time.Sleep(2 * time.Second)
+	}
+}
+
+func fetchPending() []approvalView {
+	resp, err := http.Get(meshURL + "/approvals?status=pending")
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+	var list []approvalView
+	json.NewDecoder(resp.Body).Decode(&list)
+	return list
+}
+
+func resolve(id string, action string) {
+	body := fmt.Sprintf(`{"resolved_by":"cli:%s"}`, os.Getenv("USER"))
+	resp, err := http.Post(meshURL+"/approvals/"+id+"/"+action,
+		"application/json", strings.NewReader(body))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "  error: %v\n", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	switch resp.StatusCode {
+	case 200:
+		verb := "Approved"
+		if action == "deny" {
+			verb = "Denied"
+		}
+		fmt.Printf("  %s\n", verb)
+	case 409:
+		fmt.Println("  already resolved")
+	default:
+		fmt.Fprintf(os.Stderr, "  error: status %d\n", resp.StatusCode)
 	}
 }
 

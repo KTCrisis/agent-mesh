@@ -7,6 +7,8 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"runtime"
+	"strings"
 
 	"github.com/KTCrisis/agent-mesh/approval"
 	"github.com/KTCrisis/agent-mesh/policy"
@@ -208,15 +210,62 @@ func (s *Server) handleToolsCall(params map[string]any) (any, *rpcError) {
 	}
 
 	if decision.Action == "human_approval" {
-		if s.Approvals == nil {
-			// Fallback: no approval store configured
-			s.Traces.Record(trace.Entry{
-				AgentID:    s.AgentID,
-				Tool:       toolName,
-				Params:     arguments,
-				Policy:     "human_approval",
-				PolicyRule: decision.Rule,
+		entry := trace.Entry{
+			AgentID:    s.AgentID,
+			Tool:       toolName,
+			Params:     arguments,
+			Policy:     "human_approval",
+			PolicyRule: decision.Rule,
+		}
+
+		// Try TTY prompt first (interactive terminal), fall back to approval store
+		approved, resolvedBy := s.promptTTY(toolName, arguments)
+		if approved != nil {
+			s.Traces.Record(entry)
+			if *approved {
+				entry.ApprovalStatus = string(approval.StatusApproved)
+				entry.ApprovedBy = resolvedBy
+				s.Traces.Update(entry.TraceID, func(e *trace.Entry) {
+					e.ApprovalStatus = string(approval.StatusApproved)
+					e.ApprovedBy = resolvedBy
+				})
+
+				result, statusCode, err := s.Handler.Forward(tool, arguments)
+				s.Traces.Update(entry.TraceID, func(e *trace.Entry) {
+					e.StatusCode = statusCode
+					if err != nil {
+						e.Error = err.Error()
+					}
+				})
+				if err != nil {
+					return map[string]any{
+						"content": []map[string]any{
+							{"type": "text", "text": fmt.Sprintf("Backend error: %s", err.Error())},
+						},
+					}, nil
+				}
+				resultJSON, _ := json.MarshalIndent(result, "", "  ")
+				return map[string]any{
+					"content": []map[string]any{
+						{"type": "text", "text": string(resultJSON)},
+					},
+				}, nil
+			}
+			// Denied via TTY
+			s.Traces.Update(entry.TraceID, func(e *trace.Entry) {
+				e.ApprovalStatus = string(approval.StatusDenied)
+				e.ApprovedBy = resolvedBy
 			})
+			return map[string]any{
+				"content": []map[string]any{
+					{"type": "text", "text": "Approval denied by " + resolvedBy},
+				},
+			}, nil
+		}
+
+		// No TTY available — fall back to approval store (blocking or static message)
+		if s.Approvals == nil {
+			s.Traces.Record(entry)
 			return map[string]any{
 				"content": []map[string]any{
 					{"type": "text", "text": "This action requires human approval. Please confirm in the dashboard."},
@@ -225,21 +274,13 @@ func (s *Server) handleToolsCall(params map[string]any) (any, *rpcError) {
 		}
 
 		pending := s.Approvals.Submit(s.AgentID, toolName, decision.Rule, arguments)
-
-		entry := trace.Entry{
-			AgentID:    s.AgentID,
-			Tool:       toolName,
-			Params:     arguments,
-			Policy:     "human_approval",
-			PolicyRule: decision.Rule,
-			ApprovalID: pending.ID,
-		}
+		entry.ApprovalID = pending.ID
 		s.Traces.Record(entry)
 
 		slog.Info("MCP awaiting human approval",
 			"approval_id", pending.ID, "agent", s.AgentID, "tool", toolName)
 
-		// Block until resolved
+		// Block until resolved via HTTP API
 		resolution := <-pending.Result
 
 		s.Traces.Update(entry.TraceID, func(e *trace.Entry) {
@@ -336,6 +377,51 @@ func (s *Server) writeResponse(w io.Writer, resp rpcResponse) {
 	}
 	if _, err := fmt.Fprintf(w, "%s\n", data); err != nil {
 		slog.Error("MCP server: failed to write response", "error", err)
+	}
+}
+
+// promptTTY tries to prompt the user directly via /dev/tty.
+// Returns (approved *bool, resolvedBy string). If TTY is unavailable, returns (nil, "").
+func (s *Server) promptTTY(toolName string, params map[string]any) (*bool, string) {
+	if runtime.GOOS == "windows" {
+		return nil, ""
+	}
+
+	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
+	if err != nil {
+		slog.Debug("TTY not available, falling back to approval store", "error", err)
+		return nil, ""
+	}
+	defer tty.Close()
+
+	// Display approval prompt
+	fmt.Fprintf(tty, "\n\033[1;33m>> APPROVAL REQUIRED\033[0m\n")
+	fmt.Fprintf(tty, "   agent: %s\n", s.AgentID)
+	fmt.Fprintf(tty, "   tool:  %s\n", toolName)
+	for k, v := range params {
+		str := fmt.Sprintf("%v", v)
+		if len(str) > 80 {
+			str = str[:80] + "..."
+		}
+		fmt.Fprintf(tty, "   %s: %s\n", k, str)
+	}
+	fmt.Fprintf(tty, "\n   \033[1m[a]pprove / [d]eny ?\033[0m ")
+
+	// Read response
+	reader := bufio.NewReader(tty)
+	line, _ := reader.ReadString('\n')
+	input := strings.TrimSpace(strings.ToLower(line))
+
+	resolvedBy := "tty:" + os.Getenv("USER")
+	switch input {
+	case "a", "approve":
+		fmt.Fprintf(tty, "   \033[32mApproved\033[0m\n\n")
+		approved := true
+		return &approved, resolvedBy
+	default:
+		fmt.Fprintf(tty, "   \033[31mDenied\033[0m\n\n")
+		approved := false
+		return &approved, resolvedBy
 	}
 }
 
