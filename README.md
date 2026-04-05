@@ -91,23 +91,23 @@ Grab the latest release for your platform:
 
 ```bash
 # Linux (amd64)
-curl -L https://github.com/KTCrisis/agent-mesh/releases/latest/download/agent-mesh_0.4.0_linux_amd64.tar.gz | tar xz
+curl -L https://github.com/KTCrisis/agent-mesh/releases/latest/download/agent-mesh_0.4.1_linux_amd64.tar.gz | tar xz
 sudo mv agent-mesh /usr/local/bin/
 
 # Linux (arm64)
-curl -L https://github.com/KTCrisis/agent-mesh/releases/latest/download/agent-mesh_0.4.0_linux_arm64.tar.gz | tar xz
+curl -L https://github.com/KTCrisis/agent-mesh/releases/latest/download/agent-mesh_0.4.1_linux_arm64.tar.gz | tar xz
 sudo mv agent-mesh /usr/local/bin/
 
 # macOS (Apple Silicon)
-curl -L https://github.com/KTCrisis/agent-mesh/releases/latest/download/agent-mesh_0.4.0_darwin_arm64.tar.gz | tar xz
+curl -L https://github.com/KTCrisis/agent-mesh/releases/latest/download/agent-mesh_0.4.1_darwin_arm64.tar.gz | tar xz
 sudo mv agent-mesh /usr/local/bin/
 
 # macOS (Intel)
-curl -L https://github.com/KTCrisis/agent-mesh/releases/latest/download/agent-mesh_0.4.0_darwin_amd64.tar.gz | tar xz
+curl -L https://github.com/KTCrisis/agent-mesh/releases/latest/download/agent-mesh_0.4.1_darwin_amd64.tar.gz | tar xz
 sudo mv agent-mesh /usr/local/bin/
 
 # Windows (PowerShell)
-Invoke-WebRequest -Uri https://github.com/KTCrisis/agent-mesh/releases/latest/download/agent-mesh_0.4.0_windows_amd64.zip -OutFile agent-mesh.zip
+Invoke-WebRequest -Uri https://github.com/KTCrisis/agent-mesh/releases/latest/download/agent-mesh_0.4.1_windows_amd64.zip -OutFile agent-mesh.zip
 Expand-Archive agent-mesh.zip -DestinationPath .
 ```
 
