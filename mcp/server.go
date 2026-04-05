@@ -309,61 +309,20 @@ func (s *Server) handleToolsCall(params map[string]any) (any, *rpcError) {
 		pending.TraceID = entry.TraceID
 
 		shortID := pending.ID[:8]
-		slog.Info("awaiting human approval (blocking)",
+		slog.Info("approval pending (non-blocking)",
 			"approval_id", shortID, "agent", s.AgentID, "tool", toolName,
-			"resolve_via", fmt.Sprintf("mesh approve %s OR POST /approvals/%s/approve", shortID, shortID))
+			"resolve_via", fmt.Sprintf("approval.resolve {id: %s, decision: approve} OR mesh approve %s", shortID, shortID))
 
-		// Block until approved, denied, or timeout — HTTP API (:port) handles resolution
-		start := time.Now()
-		resolution := <-pending.Result
-		approvalMs := time.Since(start).Milliseconds()
-
-		s.Traces.Update(entry.TraceID, func(e *trace.Entry) {
-			e.ApprovalStatus = string(resolution.Status)
-			e.ApprovedBy = resolution.ResolvedBy
-			e.ApprovalMs = approvalMs
-		})
-
-		switch resolution.Status {
-		case approval.StatusApproved:
-			slog.Info("approval granted", "approval_id", shortID, "by", resolution.ResolvedBy, "ms", approvalMs)
-			result, statusCode, err := s.Handler.Forward(tool, arguments)
-			s.Traces.Update(entry.TraceID, func(e *trace.Entry) {
-				e.StatusCode = statusCode
-				if err != nil {
-					e.Error = err.Error()
-				}
-			})
-			if err != nil {
-				return map[string]any{
-					"content": []map[string]any{
-						{"type": "text", "text": fmt.Sprintf("Backend error: %s", err.Error())},
-					},
-				}, nil
-			}
-			resultJSON, _ := json.MarshalIndent(result, "", "  ")
-			return map[string]any{
-				"content": []map[string]any{
-					{"type": "text", "text": string(resultJSON)},
-				},
-			}, nil
-
-		case approval.StatusDenied:
-			slog.Info("approval denied", "approval_id", shortID, "by", resolution.ResolvedBy, "ms", approvalMs)
-			return map[string]any{
-				"content": []map[string]any{
-					{"type": "text", "text": fmt.Sprintf("Approval denied by %s", resolution.ResolvedBy)},
-				},
-			}, nil
-
-		default: // timeout
-			slog.Warn("approval timed out", "approval_id", shortID, "ms", approvalMs)
-			return map[string]any{
-				"content": []map[string]any{
-					{"type": "text", "text": fmt.Sprintf("Approval timed out after %ds", approvalMs/1000)},
-				},
-			}, nil
-		}
+		// Non-blocking: return immediately, let the caller resolve via approval.resolve tool
+		remaining := pending.Remaining(s.Approvals.Timeout())
+		return map[string]any{
+			"content": []map[string]any{
+				{"type": "text", "text": fmt.Sprintf(
+					"Approval required (id: %s). Tool: %s. Timeout: %ds.\n"+
+						"Use approval.resolve with id=%s and decision=approve or deny.",
+					shortID, toolName, int(remaining.Seconds()), shortID)},
+			},
+		}, nil
 	}
 
 	// Forward to backend
