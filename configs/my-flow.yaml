@@ -2,20 +2,35 @@ port: 9090
 trace_file: /home/fluxart/agent-mesh/traces.jsonl
 
 mcp_servers:
+  # ── Filesystem ──
   - name: filesystem
     transport: stdio
     command: npx
     args: ["-y", "@modelcontextprotocol/server-filesystem", "/home/fluxart"]
 
+  # ── Gmail ──
   - name: gmail
     transport: stdio
     command: npx
     args: ["-y", "@monsoft/mcp-gmail"]
 
+  # ── Weather + Geocoding ──
   - name: weather
     transport: stdio
     command: npx
     args: ["-y", "open-meteo-mcp-server"]
+
+  # ── Flights ──
+  - name: flights
+    transport: stdio
+    command: npx
+    args: ["-y", "google-flights-mcp-server"]
+
+  # ── Travel utilities ──
+  - name: travel
+    transport: stdio
+    command: npx
+    args: ["-y", "travel-mcp"]
 
   # Uncomment when GITHUB_TOKEN is set:
   # - name: github
@@ -47,7 +62,7 @@ policies:
           ]
         action: allow
 
-      # Write operations — human approval required (not denied)
+      # Write operations — human approval required
       - tools:
           [
             "filesystem.edit_file",
@@ -55,10 +70,6 @@ policies:
             "filesystem.create_directory",
           ]
         action: human_approval
-
-      # ── Weather ──
-      - tools: ["weather.*"]
-        action: allow
 
       # Move/rename — denied (destructive, hard to undo)
       - tools: ["filesystem.move_file"]
@@ -78,7 +89,7 @@ policies:
           ]
         action: allow
 
-      # Low-risk write — human approval (draft, label, mark read)
+      # Low-risk write — human approval
       - tools:
           [
             "gmail.gmail_draft_email",
@@ -90,11 +101,11 @@ policies:
           ]
         action: human_approval
 
-      # Send email — human approval (visible action, but useful)
+      # Send email — human approval
       - tools: ["gmail.gmail_send_email"]
         action: human_approval
 
-      # Destructive — denied (delete, trash, batch ops, forwarding)
+      # Destructive — denied
       - tools:
           [
             "gmail.gmail_delete_email",
@@ -104,14 +115,21 @@ policies:
             "gmail.gmail_modify_email",
             "gmail.gmail_set_vacation_responder",
             "gmail.gmail_update_forwarding",
-            "gmail.gmail_batch_archive",
-            "gmail.gmail_batch_delete",
-            "gmail.gmail_batch_mark_as_read",
-            "gmail.gmail_batch_mark_as_unread",
-            "gmail.gmail_batch_modify",
-            "gmail.gmail_batch_move_to_trash",
+            "gmail.gmail_batch_*",
           ]
         action: deny
+
+      # ── Weather + Geocoding (read-only) ──
+      - tools: ["weather.*"]
+        action: allow
+
+      # ── Flights (search only) ──
+      - tools: ["flights.*"]
+        action: allow
+
+      # ── Travel utilities (read-only) ──
+      - tools: ["travel.*"]
+        action: allow
 
   - name: default
     agent: "*"
