@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net/http"
 	"os"
 	"runtime"
 	"strings"
@@ -172,31 +171,6 @@ func (s *Server) handleToolsList() map[string]any {
 		})
 	}
 
-	// Append built-in tools (subject to policy evaluation)
-	mcpTools = append(mcpTools, MCPTool{
-		Name:        "filesystem.delete_file",
-		Description: "Delete a file from the filesystem",
-		InputSchema: MCPSchema{
-			Type: "object",
-			Properties: map[string]MCPProp{
-				"path": {Type: "string", Description: "Absolute path of the file to delete"},
-			},
-			Required: []string{"path"},
-		},
-	}, MCPTool{
-		Name:        "http.fetch",
-		Description: "Make an HTTP request to a URL and return the response",
-		InputSchema: MCPSchema{
-			Type: "object",
-			Properties: map[string]MCPProp{
-				"url":    {Type: "string", Description: "The URL to fetch"},
-				"method": {Type: "string", Description: "HTTP method (GET, POST, PUT, DELETE). Default: GET"},
-				"body":   {Type: "string", Description: "Request body (for POST/PUT)"},
-			},
-			Required: []string{"url"},
-		},
-	})
-
 	// Append virtual approval tools (no policy evaluation)
 	mcpTools = append(mcpTools, MCPTool{
 		Name:        "approval.resolve",
@@ -237,15 +211,9 @@ func (s *Server) handleToolsCall(params map[string]any) (any, *rpcError) {
 		return s.handleApprovalPending()
 	}
 
-	// Built-in tools — subject to policy evaluation, but not in registry
-	builtinTools := map[string]bool{
-		"filesystem.delete_file": true,
-		"http.fetch":             true,
-	}
-
-	// Look up tool (allow built-in tools to pass without registry entry)
+	// Look up tool
 	tool := s.Registry.Get(toolName)
-	if tool == nil && !builtinTools[toolName] {
+	if tool == nil {
 		return nil, &rpcError{Code: -32602, Message: fmt.Sprintf("Unknown tool: %s", toolName)}
 	}
 
@@ -357,19 +325,8 @@ func (s *Server) handleToolsCall(params map[string]any) (any, *rpcError) {
 		}, nil
 	}
 
-	// Execute — built-in tools or forward to backend
-	var result any
-	var statusCode int
-	var err error
-
-	switch toolName {
-	case "filesystem.delete_file":
-		result, statusCode, err = s.handleDeleteFile(arguments)
-	case "http.fetch":
-		result, statusCode, err = s.handleHTTPFetch(arguments)
-	default:
-		result, statusCode, err = s.Handler.Forward(tool, arguments)
-	}
+	// Forward to backend
+	result, statusCode, err := s.Handler.Forward(tool, arguments)
 
 	// Trace
 	entry := trace.Entry{
@@ -529,78 +486,6 @@ func (s *Server) handleApprovalPending() (any, *rpcError) {
 			{"type": "text", "text": sb.String()},
 		},
 	}, nil
-}
-
-// handleDeleteFile removes a file from the filesystem.
-func (s *Server) handleDeleteFile(args map[string]any) (any, int, error) {
-	path, _ := args["path"].(string)
-	if path == "" {
-		return nil, 400, fmt.Errorf("missing 'path' parameter")
-	}
-
-	if err := os.Remove(path); err != nil {
-		return nil, 500, fmt.Errorf("delete failed: %w", err)
-	}
-
-	return map[string]any{"deleted": path}, 200, nil
-}
-
-// handleHTTPFetch makes an HTTP request and returns the response.
-func (s *Server) handleHTTPFetch(args map[string]any) (any, int, error) {
-	rawURL, _ := args["url"].(string)
-	if rawURL == "" {
-		return nil, 400, fmt.Errorf("missing 'url' parameter")
-	}
-
-	method, _ := args["method"].(string)
-	if method == "" {
-		method = "GET"
-	}
-	method = strings.ToUpper(method)
-
-	var body io.Reader
-	if b, ok := args["body"].(string); ok && b != "" {
-		body = strings.NewReader(b)
-	}
-
-	req, err := http.NewRequest(method, rawURL, body)
-	if err != nil {
-		return nil, 400, fmt.Errorf("invalid request: %w", err)
-	}
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, 502, fmt.Errorf("fetch failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	// Limit response size to 1MB
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return nil, 502, fmt.Errorf("read response: %w", err)
-	}
-
-	result := map[string]any{
-		"status":  resp.StatusCode,
-		"headers": flattenHeaders(resp.Header),
-		"body":    string(respBody),
-	}
-	return result, resp.StatusCode, nil
-}
-
-// flattenHeaders converts http.Header to a simple map (first value only).
-func flattenHeaders(h http.Header) map[string]string {
-	flat := make(map[string]string, len(h))
-	for k, v := range h {
-		if len(v) > 0 {
-			flat[k] = v[0]
-		}
-	}
-	return flat
 }
 
 func (s *Server) writeResponse(w io.Writer, resp rpcResponse) {

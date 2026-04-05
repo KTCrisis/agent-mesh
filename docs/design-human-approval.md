@@ -187,17 +187,6 @@ Two virtual tools are registered alongside the proxied tools (no policy evaluati
 
 These are handled before registry lookup and policy evaluation — they're internal to agent-mesh.
 
-### Built-in Tools (v0.3.3)
-
-Two built-in tools provide capabilities not available from upstream MCP servers. Unlike virtual tools, these **go through the policy engine** like any proxied tool:
-
-| Tool | Description | Parameters |
-|------|-------------|------------|
-| `filesystem.delete_file` | Delete a file from the filesystem | `path` (string, required) |
-| `http.fetch` | Make an HTTP request and return the response | `url` (string, required), `method` (GET/POST/PUT/DELETE, default GET), `body` (string, optional) |
-
-`http.fetch` returns `{status, headers, body}` with a 1MB response limit and 30s timeout. This fills the "sidecar proxy that doesn't proxy network" gap — agents can now reach external APIs, subject to policy.
-
 ### HTTP Proxy — Async Mode (planned)
 
 The HTTP handler will return `202 Accepted` immediately with a pending approval ID. The agent polls `GET /approvals/{id}/result` for the result, or sets `X-Callback-URL` for push notification.

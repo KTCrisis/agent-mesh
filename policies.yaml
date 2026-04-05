@@ -49,12 +49,6 @@ policies:
       - tools: ["delete_pet", "delete_order", "delete_user"]
         action: deny
 
-      # Built-in tools
-      - tools: ["filesystem.delete_file"]
-        action: human_approval
-      - tools: ["http.fetch"]
-        action: human_approval
-
   # Admin agent — full access
   - name: admin-agent
     agent: "admin-*"

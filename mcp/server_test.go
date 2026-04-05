@@ -118,9 +118,9 @@ func TestServerToolsList(t *testing.T) {
 
 	result, _ := responses[0].Result.(map[string]any)
 	tools, _ := result["tools"].([]any)
-	// 2 registry tools + 2 built-in tools (filesystem.delete_file, http.fetch) + 2 virtual tools (approval.resolve, approval.pending)
-	if len(tools) != 6 {
-		t.Errorf("tools = %d, want 6", len(tools))
+	// 2 registry tools + 2 virtual tools (approval.resolve, approval.pending)
+	if len(tools) != 4 {
+		t.Errorf("tools = %d, want 4", len(tools))
 	}
 }
 
