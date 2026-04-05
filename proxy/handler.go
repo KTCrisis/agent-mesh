@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/KTCrisis/agent-mesh/approval"
 	"github.com/KTCrisis/agent-mesh/policy"
 	"github.com/KTCrisis/agent-mesh/registry"
 	"github.com/KTCrisis/agent-mesh/trace"
@@ -24,11 +25,12 @@ type ToolCallRequest struct {
 
 // ToolCallResponse is returned to the agent.
 type ToolCallResponse struct {
-	Result    any    `json:"result,omitempty"`
-	TraceID   string `json:"trace_id"`
-	Policy    string `json:"policy"`
-	LatencyMs int64  `json:"latency_ms"`
-	Error     string `json:"error,omitempty"`
+	Result     any    `json:"result,omitempty"`
+	TraceID    string `json:"trace_id"`
+	ApprovalID string `json:"approval_id,omitempty"`
+	Policy     string `json:"policy"`
+	LatencyMs  int64  `json:"latency_ms"`
+	Error      string `json:"error,omitempty"`
 }
 
 // MCPForwarder is the interface for forwarding calls to upstream MCP servers.
@@ -39,9 +41,10 @@ type MCPForwarder interface {
 
 // Handler is the HTTP handler for the sidecar proxy.
 type Handler struct {
-	Registry   *registry.Registry
-	Policy     *policy.Engine
-	Traces     *trace.Store
+	Registry     *registry.Registry
+	Policy       *policy.Engine
+	Traces       *trace.Store
+	Approvals    *approval.Store
 	Client       *http.Client
 	MCPForwarder MCPForwarder
 }
@@ -66,6 +69,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleTraces(w, r)
 	case r.Method == "GET" && r.URL.Path == "/mcp-servers":
 		h.handleMCPServers(w, r)
+	case r.Method == "GET" && r.URL.Path == "/approvals":
+		h.handleListApprovals(w, r)
+	case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/approvals/") && !strings.Contains(strings.TrimPrefix(r.URL.Path, "/approvals/"), "/"):
+		h.handleGetApproval(w, r)
+	case r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/approve") && strings.HasPrefix(r.URL.Path, "/approvals/"):
+		h.handleApproveAction(w, r)
+	case r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/deny") && strings.HasPrefix(r.URL.Path, "/approvals/"):
+		h.handleDenyAction(w, r)
 	case r.Method == "GET" && r.URL.Path == "/health":
 		h.handleHealth(w, r)
 	default:
@@ -118,20 +129,93 @@ func (h *Handler) handleToolCall(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if decision.Action == "human_approval" {
+		if h.Approvals == nil {
+			// Fallback: no approval store configured
+			entry := trace.Entry{
+				AgentID:    agentID,
+				Tool:       toolName,
+				Params:     req.Params,
+				Policy:     "human_approval",
+				PolicyRule: decision.Rule,
+				LatencyMs:  time.Since(start).Milliseconds(),
+			}
+			h.Traces.Record(entry)
+			writeJSON(w, 202, ToolCallResponse{
+				TraceID: entry.TraceID,
+				Policy:  "human_approval",
+				Error:   "action requires human approval",
+			})
+			return
+		}
+
+		pending := h.Approvals.Submit(agentID, toolName, decision.Rule, req.Params)
+
 		entry := trace.Entry{
 			AgentID:    agentID,
 			Tool:       toolName,
 			Params:     req.Params,
 			Policy:     "human_approval",
 			PolicyRule: decision.Rule,
-			LatencyMs:  time.Since(start).Milliseconds(),
+			ApprovalID: pending.ID,
 		}
 		h.Traces.Record(entry)
-		writeJSON(w, 202, ToolCallResponse{
-			TraceID: entry.TraceID,
-			Policy:  "human_approval",
-			Error:   "action requires human approval",
+
+		slog.Info("awaiting human approval",
+			"approval_id", pending.ID, "agent", agentID, "tool", toolName)
+
+		// Block until resolved
+		resolution := <-pending.Result
+		approvalMs := time.Since(start).Milliseconds()
+
+		h.Traces.Update(entry.TraceID, func(e *trace.Entry) {
+			e.ApprovalStatus = string(resolution.Status)
+			e.ApprovedBy = resolution.ResolvedBy
+			e.ApprovalMs = approvalMs
 		})
+
+		switch resolution.Status {
+		case approval.StatusApproved:
+			result, statusCode, err := h.Forward(tool, req.Params)
+			totalMs := time.Since(start).Milliseconds()
+			h.Traces.Update(entry.TraceID, func(e *trace.Entry) {
+				e.StatusCode = statusCode
+				e.LatencyMs = totalMs
+				if err != nil {
+					e.Error = err.Error()
+				}
+			})
+			resp := ToolCallResponse{
+				Result:     result,
+				TraceID:    entry.TraceID,
+				ApprovalID: pending.ID,
+				Policy:     "human_approval",
+				LatencyMs:  totalMs,
+			}
+			if err != nil {
+				resp.Error = err.Error()
+				writeJSON(w, 502, resp)
+				return
+			}
+			writeJSON(w, 200, resp)
+
+		case approval.StatusDenied:
+			writeJSON(w, 403, ToolCallResponse{
+				TraceID:    entry.TraceID,
+				ApprovalID: pending.ID,
+				Policy:     "human_approval",
+				LatencyMs:  approvalMs,
+				Error:      "approval denied by " + resolution.ResolvedBy,
+			})
+
+		case approval.StatusTimeout:
+			writeJSON(w, 408, ToolCallResponse{
+				TraceID:    entry.TraceID,
+				ApprovalID: pending.ID,
+				Policy:     "human_approval",
+				LatencyMs:  approvalMs,
+				Error:      "approval timed out",
+			})
+		}
 		return
 	}
 
@@ -296,6 +380,116 @@ func extractAgentID(r *http.Request) string {
 		return "anonymous"
 	}
 	return auth
+}
+
+// --- Approval endpoints ---
+
+type approvalView struct {
+	ID         string         `json:"id"`
+	AgentID    string         `json:"agent_id"`
+	Tool       string         `json:"tool"`
+	Params     map[string]any `json:"params"`
+	PolicyRule string         `json:"policy_rule"`
+	Status     string         `json:"status"`
+	CreatedAt  time.Time      `json:"created_at"`
+	Remaining  string         `json:"remaining,omitempty"`
+	ResolvedBy string         `json:"resolved_by,omitempty"`
+	ResolvedAt *time.Time     `json:"resolved_at,omitempty"`
+}
+
+func (h *Handler) toApprovalView(pa *approval.PendingApproval) approvalView {
+	v := approvalView{
+		ID:         pa.ID,
+		AgentID:    pa.AgentID,
+		Tool:       pa.Tool,
+		Params:     pa.Params,
+		PolicyRule: pa.PolicyRule,
+		Status:     string(pa.Status),
+		CreatedAt:  pa.CreatedAt,
+		ResolvedBy: pa.ResolvedBy,
+	}
+	if pa.Status == approval.StatusPending && h.Approvals != nil {
+		v.Remaining = pa.Remaining(h.Approvals.Timeout()).Truncate(time.Second).String()
+	}
+	if !pa.ResolvedAt.IsZero() {
+		v.ResolvedAt = &pa.ResolvedAt
+	}
+	return v
+}
+
+func (h *Handler) handleListApprovals(w http.ResponseWriter, r *http.Request) {
+	if h.Approvals == nil {
+		writeJSON(w, 200, []any{})
+		return
+	}
+	status := r.URL.Query().Get("status")
+	var list []*approval.PendingApproval
+	if status == "pending" {
+		list = h.Approvals.ListPending()
+	} else {
+		list = h.Approvals.List()
+	}
+	views := make([]approvalView, len(list))
+	for i, pa := range list {
+		views[i] = h.toApprovalView(pa)
+	}
+	writeJSON(w, 200, views)
+}
+
+func (h *Handler) handleGetApproval(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimPrefix(r.URL.Path, "/approvals/")
+	if h.Approvals == nil {
+		writeJSON(w, 404, map[string]string{"error": "approval system not configured"})
+		return
+	}
+	pa := h.Approvals.Get(id)
+	if pa == nil {
+		writeJSON(w, 404, map[string]string{"error": "approval not found"})
+		return
+	}
+	writeJSON(w, 200, h.toApprovalView(pa))
+}
+
+type resolveRequest struct {
+	ResolvedBy string `json:"resolved_by"`
+}
+
+func (h *Handler) handleApproveAction(w http.ResponseWriter, r *http.Request) {
+	h.handleResolveAction(w, r, approval.StatusApproved)
+}
+
+func (h *Handler) handleDenyAction(w http.ResponseWriter, r *http.Request) {
+	h.handleResolveAction(w, r, approval.StatusDenied)
+}
+
+func (h *Handler) handleResolveAction(w http.ResponseWriter, r *http.Request, status approval.Status) {
+	// Extract ID from /approvals/{id}/approve or /approvals/{id}/deny
+	path := strings.TrimPrefix(r.URL.Path, "/approvals/")
+	parts := strings.SplitN(path, "/", 2)
+	id := parts[0]
+
+	if h.Approvals == nil {
+		writeJSON(w, 404, map[string]string{"error": "approval system not configured"})
+		return
+	}
+
+	var req resolveRequest
+	json.NewDecoder(r.Body).Decode(&req) // ignore error — body is optional
+	if req.ResolvedBy == "" {
+		req.ResolvedBy = "http:" + r.RemoteAddr
+	}
+
+	err := h.Approvals.Resolve(id, status, req.ResolvedBy)
+	if err == approval.ErrNotFound {
+		writeJSON(w, 404, map[string]string{"error": "approval not found"})
+		return
+	}
+	if err == approval.ErrAlreadyResolved {
+		writeJSON(w, 409, map[string]string{"error": "approval already resolved"})
+		return
+	}
+
+	writeJSON(w, 200, map[string]string{"status": string(status), "id": id})
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

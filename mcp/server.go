@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 
+	"github.com/KTCrisis/agent-mesh/approval"
 	"github.com/KTCrisis/agent-mesh/policy"
 	"github.com/KTCrisis/agent-mesh/proxy"
 	"github.com/KTCrisis/agent-mesh/registry"
@@ -57,11 +58,12 @@ type MCPProp struct {
 
 // Server runs the MCP stdio protocol.
 type Server struct {
-	Registry *registry.Registry
-	Policy   *policy.Engine
-	Traces   *trace.Store
-	Handler  *proxy.Handler
-	AgentID  string // agent ID for policy evaluation in MCP mode
+	Registry  *registry.Registry
+	Policy    *policy.Engine
+	Traces    *trace.Store
+	Approvals *approval.Store
+	Handler   *proxy.Handler
+	AgentID   string // agent ID for policy evaluation in MCP mode
 }
 
 // Run starts the MCP server on stdin/stdout.
@@ -206,18 +208,83 @@ func (s *Server) handleToolsCall(params map[string]any) (any, *rpcError) {
 	}
 
 	if decision.Action == "human_approval" {
-		s.Traces.Record(trace.Entry{
+		if s.Approvals == nil {
+			// Fallback: no approval store configured
+			s.Traces.Record(trace.Entry{
+				AgentID:    s.AgentID,
+				Tool:       toolName,
+				Params:     arguments,
+				Policy:     "human_approval",
+				PolicyRule: decision.Rule,
+			})
+			return map[string]any{
+				"content": []map[string]any{
+					{"type": "text", "text": "This action requires human approval. Please confirm in the dashboard."},
+				},
+			}, nil
+		}
+
+		pending := s.Approvals.Submit(s.AgentID, toolName, decision.Rule, arguments)
+
+		entry := trace.Entry{
 			AgentID:    s.AgentID,
 			Tool:       toolName,
 			Params:     arguments,
 			Policy:     "human_approval",
 			PolicyRule: decision.Rule,
+			ApprovalID: pending.ID,
+		}
+		s.Traces.Record(entry)
+
+		slog.Info("MCP awaiting human approval",
+			"approval_id", pending.ID, "agent", s.AgentID, "tool", toolName)
+
+		// Block until resolved
+		resolution := <-pending.Result
+
+		s.Traces.Update(entry.TraceID, func(e *trace.Entry) {
+			e.ApprovalStatus = string(resolution.Status)
+			e.ApprovedBy = resolution.ResolvedBy
+			e.ApprovalMs = resolution.ResolvedAt.Sub(pending.CreatedAt).Milliseconds()
 		})
-		return map[string]any{
-			"content": []map[string]any{
-				{"type": "text", "text": "This action requires human approval. Please confirm in the dashboard."},
-			},
-		}, nil
+
+		switch resolution.Status {
+		case approval.StatusApproved:
+			result, statusCode, err := s.Handler.Forward(tool, arguments)
+			s.Traces.Update(entry.TraceID, func(e *trace.Entry) {
+				e.StatusCode = statusCode
+				if err != nil {
+					e.Error = err.Error()
+				}
+			})
+			if err != nil {
+				return map[string]any{
+					"content": []map[string]any{
+						{"type": "text", "text": fmt.Sprintf("Backend error: %s", err.Error())},
+					},
+				}, nil
+			}
+			resultJSON, _ := json.MarshalIndent(result, "", "  ")
+			return map[string]any{
+				"content": []map[string]any{
+					{"type": "text", "text": string(resultJSON)},
+				},
+			}, nil
+
+		case approval.StatusDenied:
+			return map[string]any{
+				"content": []map[string]any{
+					{"type": "text", "text": fmt.Sprintf("Approval denied by %s", resolution.ResolvedBy)},
+				},
+			}, nil
+
+		case approval.StatusTimeout:
+			return map[string]any{
+				"content": []map[string]any{
+					{"type": "text", "text": "Approval timed out — action not taken"},
+				},
+			}, nil
+		}
 	}
 
 	// Forward to backend

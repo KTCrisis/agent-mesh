@@ -1,0 +1,170 @@
+package approval
+
+import (
+	"sync"
+	"testing"
+	"time"
+)
+
+func TestSubmitAndApprove(t *testing.T) {
+	s := NewStore(5 * time.Second)
+	pa := s.Submit("claude", "write_file", "rule-1", map[string]any{"path": "/tmp/x"})
+
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		if err := s.Approve(pa.ID, "tester"); err != nil {
+			t.Errorf("Approve: %v", err)
+		}
+	}()
+
+	res := <-pa.Result
+	if res.Status != StatusApproved {
+		t.Errorf("status = %q, want approved", res.Status)
+	}
+	if res.ResolvedBy != "tester" {
+		t.Errorf("resolved_by = %q, want tester", res.ResolvedBy)
+	}
+
+	// Verify store state
+	got := s.Get(pa.ID)
+	if got.Status != StatusApproved {
+		t.Errorf("stored status = %q, want approved", got.Status)
+	}
+}
+
+func TestSubmitAndDeny(t *testing.T) {
+	s := NewStore(5 * time.Second)
+	pa := s.Submit("claude", "send_email", "rule-2", nil)
+
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		if err := s.Deny(pa.ID, "admin"); err != nil {
+			t.Errorf("Deny: %v", err)
+		}
+	}()
+
+	res := <-pa.Result
+	if res.Status != StatusDenied {
+		t.Errorf("status = %q, want denied", res.Status)
+	}
+}
+
+func TestSubmitTimeout(t *testing.T) {
+	s := NewStore(50 * time.Millisecond)
+	pa := s.Submit("claude", "write_file", "rule-1", nil)
+
+	res := <-pa.Result
+	if res.Status != StatusTimeout {
+		t.Errorf("status = %q, want timeout", res.Status)
+	}
+	if res.ResolvedBy != "system:timeout" {
+		t.Errorf("resolved_by = %q, want system:timeout", res.ResolvedBy)
+	}
+
+	got := s.Get(pa.ID)
+	if got.Status != StatusTimeout {
+		t.Errorf("stored status = %q, want timeout", got.Status)
+	}
+}
+
+func TestDoubleResolve(t *testing.T) {
+	s := NewStore(5 * time.Second)
+	pa := s.Submit("claude", "write_file", "rule-1", nil)
+
+	if err := s.Approve(pa.ID, "first"); err != nil {
+		t.Fatalf("first Approve: %v", err)
+	}
+
+	err := s.Approve(pa.ID, "second")
+	if err != ErrAlreadyResolved {
+		t.Errorf("second Approve: got %v, want ErrAlreadyResolved", err)
+	}
+}
+
+func TestResolveNotFound(t *testing.T) {
+	s := NewStore(5 * time.Second)
+	err := s.Approve("nonexistent", "tester")
+	if err != ErrNotFound {
+		t.Errorf("got %v, want ErrNotFound", err)
+	}
+}
+
+func TestGetNil(t *testing.T) {
+	s := NewStore(5 * time.Second)
+	if got := s.Get("nope"); got != nil {
+		t.Error("Get should return nil for unknown ID")
+	}
+}
+
+func TestList(t *testing.T) {
+	s := NewStore(5 * time.Second)
+	s.Submit("a", "tool1", "r", nil)
+	time.Sleep(time.Millisecond)
+	s.Submit("b", "tool2", "r", nil)
+	time.Sleep(time.Millisecond)
+	pa3 := s.Submit("c", "tool3", "r", nil)
+
+	all := s.List()
+	if len(all) != 3 {
+		t.Fatalf("list = %d, want 3", len(all))
+	}
+	// Most recent first
+	if all[0].AgentID != "c" {
+		t.Errorf("first = %q, want c (most recent)", all[0].AgentID)
+	}
+
+	// Approve one
+	s.Approve(pa3.ID, "tester")
+
+	pending := s.ListPending()
+	if len(pending) != 2 {
+		t.Errorf("pending = %d, want 2", len(pending))
+	}
+}
+
+func TestConcurrentResolve(t *testing.T) {
+	s := NewStore(5 * time.Second)
+	pa := s.Submit("claude", "write_file", "rule-1", nil)
+
+	var wg sync.WaitGroup
+	successes := make(chan string, 10)
+
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			err := s.Approve(pa.ID, "worker")
+			if err == nil {
+				successes <- "ok"
+			}
+		}(i)
+	}
+
+	wg.Wait()
+	close(successes)
+
+	count := 0
+	for range successes {
+		count++
+	}
+	if count != 1 {
+		t.Errorf("successful resolves = %d, want exactly 1", count)
+	}
+}
+
+func TestDefaultTimeout(t *testing.T) {
+	s := NewStore(0)
+	if s.Timeout() != 5*time.Minute {
+		t.Errorf("default timeout = %v, want 5m", s.Timeout())
+	}
+}
+
+func TestRemaining(t *testing.T) {
+	s := NewStore(1 * time.Second)
+	pa := s.Submit("claude", "tool", "r", nil)
+
+	rem := pa.Remaining(s.Timeout())
+	if rem <= 0 || rem > 1*time.Second {
+		t.Errorf("remaining = %v, expected 0 < r <= 1s", rem)
+	}
+}

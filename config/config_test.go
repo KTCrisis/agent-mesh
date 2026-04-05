@@ -136,6 +136,37 @@ policies:
 	}
 }
 
+func TestLoadApprovalConfig(t *testing.T) {
+	yaml := `
+port: 9090
+approval:
+  timeout_seconds: 120
+policies: []
+`
+	f := writeTempFile(t, yaml)
+	cfg, err := Load(f)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Approval.TimeoutSeconds != 120 {
+		t.Errorf("timeout_seconds = %d, want 120", cfg.Approval.TimeoutSeconds)
+	}
+}
+
+func TestLoadApprovalDefault(t *testing.T) {
+	yaml := `
+policies: []
+`
+	f := writeTempFile(t, yaml)
+	cfg, err := Load(f)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Approval.TimeoutSeconds != 300 {
+		t.Errorf("timeout_seconds = %d, want 300 (default)", cfg.Approval.TimeoutSeconds)
+	}
+}
+
 func TestLoadFileNotFound(t *testing.T) {
 	_, err := Load("/nonexistent/path.yaml")
 	if err == nil {

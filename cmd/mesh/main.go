@@ -1,0 +1,170 @@
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"os"
+	"strings"
+	"text/tabwriter"
+	"time"
+)
+
+var meshURL = "http://localhost:9090"
+
+func init() {
+	if u := os.Getenv("MESH_URL"); u != "" {
+		meshURL = u
+	}
+}
+
+func main() {
+	if len(os.Args) < 2 {
+		usage()
+		os.Exit(1)
+	}
+
+	switch os.Args[1] {
+	case "pending":
+		cmdPending()
+	case "show":
+		if len(os.Args) < 3 {
+			fmt.Fprintln(os.Stderr, "usage: mesh show <id>")
+			os.Exit(1)
+		}
+		cmdShow(os.Args[2])
+	case "approve":
+		if len(os.Args) < 3 {
+			fmt.Fprintln(os.Stderr, "usage: mesh approve <id>")
+			os.Exit(1)
+		}
+		cmdResolve(os.Args[2], "approve")
+	case "deny":
+		if len(os.Args) < 3 {
+			fmt.Fprintln(os.Stderr, "usage: mesh deny <id>")
+			os.Exit(1)
+		}
+		cmdResolve(os.Args[2], "deny")
+	default:
+		fmt.Fprintf(os.Stderr, "unknown command: %s\n", os.Args[1])
+		usage()
+		os.Exit(1)
+	}
+}
+
+func usage() {
+	fmt.Fprintln(os.Stderr, `usage: mesh <command> [args]
+
+commands:
+  pending              List pending approvals
+  show <id>            Show approval details
+  approve <id>         Approve a pending request
+  deny <id>            Deny a pending request
+
+env:
+  MESH_URL             Agent-mesh URL (default http://localhost:9090)`)
+}
+
+type approvalView struct {
+	ID         string         `json:"id"`
+	AgentID    string         `json:"agent_id"`
+	Tool       string         `json:"tool"`
+	Params     map[string]any `json:"params"`
+	PolicyRule string         `json:"policy_rule"`
+	Status     string         `json:"status"`
+	CreatedAt  time.Time      `json:"created_at"`
+	Remaining  string         `json:"remaining,omitempty"`
+	ResolvedBy string         `json:"resolved_by,omitempty"`
+}
+
+func cmdPending() {
+	resp, err := http.Get(meshURL + "/approvals?status=pending")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	defer resp.Body.Close()
+
+	var list []approvalView
+	json.NewDecoder(resp.Body).Decode(&list)
+
+	if len(list) == 0 {
+		fmt.Println("no pending approvals")
+		return
+	}
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "ID\tAGE\tAGENT\tTOOL\tREMAINING")
+	for _, a := range list {
+		age := time.Since(a.CreatedAt).Truncate(time.Second)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
+			a.ID[:8], age, a.AgentID, a.Tool, a.Remaining)
+	}
+	w.Flush()
+}
+
+func cmdShow(id string) {
+	resp, err := http.Get(meshURL + "/approvals/" + id)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == 404 {
+		fmt.Fprintf(os.Stderr, "approval %s not found\n", id)
+		os.Exit(1)
+	}
+
+	var a approvalView
+	json.NewDecoder(resp.Body).Decode(&a)
+
+	fmt.Printf("ID:       %s\n", a.ID)
+	fmt.Printf("Agent:    %s\n", a.AgentID)
+	fmt.Printf("Tool:     %s\n", a.Tool)
+	fmt.Printf("Policy:   %s\n", a.PolicyRule)
+	fmt.Printf("Status:   %s\n", a.Status)
+	fmt.Printf("Age:      %s\n", time.Since(a.CreatedAt).Truncate(time.Second))
+	if a.Remaining != "" {
+		fmt.Printf("Timeout:  %s remaining\n", a.Remaining)
+	}
+	if len(a.Params) > 0 {
+		fmt.Println("Params:")
+		for k, v := range a.Params {
+			s := fmt.Sprintf("%v", v)
+			if len(s) > 120 {
+				s = s[:120] + "..."
+			}
+			fmt.Printf("  %s: %s\n", k, s)
+		}
+	}
+}
+
+func cmdResolve(id string, action string) {
+	body := fmt.Sprintf(`{"resolved_by":"cli:%s"}`, os.Getenv("USER"))
+	resp, err := http.Post(meshURL+"/approvals/"+id+"/"+action,
+		"application/json", strings.NewReader(body))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+	defer resp.Body.Close()
+
+	switch resp.StatusCode {
+	case 200:
+		verb := "Approved"
+		if action == "deny" {
+			verb = "Denied"
+		}
+		fmt.Printf("%s: %s\n", verb, id)
+	case 404:
+		fmt.Fprintf(os.Stderr, "approval %s not found\n", id)
+		os.Exit(1)
+	case 409:
+		fmt.Fprintf(os.Stderr, "approval %s already resolved\n", id)
+		os.Exit(1)
+	default:
+		fmt.Fprintf(os.Stderr, "unexpected status: %d\n", resp.StatusCode)
+		os.Exit(1)
+	}
+}

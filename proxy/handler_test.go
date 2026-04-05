@@ -8,7 +8,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/KTCrisis/agent-mesh/approval"
 	"github.com/KTCrisis/agent-mesh/config"
 	"github.com/KTCrisis/agent-mesh/policy"
 	"github.com/KTCrisis/agent-mesh/registry"
@@ -372,7 +374,7 @@ func TestHandleToolCallMCPNoForwarder(t *testing.T) {
 	}
 }
 
-func TestHandleToolCallHumanApproval(t *testing.T) {
+func TestHandleToolCallHumanApprovalNoStore(t *testing.T) {
 	reg := registry.New()
 	reg.LoadManual(&registry.Tool{Name: "risky_tool", Source: "openapi"})
 
@@ -383,6 +385,7 @@ func TestHandleToolCallHumanApproval(t *testing.T) {
 	})
 
 	handler := NewHandler(reg, pol, trace.NewStore(100))
+	// No Approvals store — fallback behavior
 
 	req := httptest.NewRequest("POST", "/tool/risky_tool", strings.NewReader(`{"params":{}}`))
 	w := httptest.NewRecorder()
@@ -398,6 +401,232 @@ func TestHandleToolCallHumanApproval(t *testing.T) {
 	if resp.Policy != "human_approval" {
 		t.Errorf("policy = %q, want human_approval", resp.Policy)
 	}
+}
+
+func approvalHandler(t *testing.T) (*Handler, *httptest.Server) {
+	t.Helper()
+
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{"ok": true})
+	}))
+	t.Cleanup(backend.Close)
+
+	reg := registry.New()
+	reg.LoadManual(&registry.Tool{
+		Name:    "risky_tool",
+		Method:  "POST",
+		Path:    "/action",
+		BaseURL: backend.URL,
+		Source:  "openapi",
+	})
+
+	pol := policy.NewEngine([]config.Policy{
+		{Name: "approval", Agent: "*", Rules: []config.Rule{
+			{Tools: []string{"risky_tool"}, Action: "human_approval"},
+		}},
+	})
+
+	handler := NewHandler(reg, pol, trace.NewStore(100))
+	handler.Approvals = approval.NewStore(5 * time.Second)
+	return handler, backend
+}
+
+func TestHandleToolCallApproved(t *testing.T) {
+	handler, _ := approvalHandler(t)
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	// Launch blocking tool call
+	done := make(chan *http.Response, 1)
+	go func() {
+		resp, err := http.Post(srv.URL+"/tool/risky_tool", "application/json",
+			strings.NewReader(`{"params":{}}`))
+		if err != nil {
+			t.Errorf("tool call: %v", err)
+		}
+		done <- resp
+	}()
+
+	// Wait for approval to appear
+	time.Sleep(50 * time.Millisecond)
+
+	// List pending
+	listResp, err := http.Get(srv.URL + "/approvals?status=pending")
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	var list []approvalView
+	json.NewDecoder(listResp.Body).Decode(&list)
+	listResp.Body.Close()
+
+	if len(list) != 1 {
+		t.Fatalf("pending = %d, want 1", len(list))
+	}
+
+	// Approve
+	approveResp, err := http.Post(srv.URL+"/approvals/"+list[0].ID+"/approve",
+		"application/json", strings.NewReader(`{"resolved_by":"tester"}`))
+	if err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+	if approveResp.StatusCode != 200 {
+		t.Fatalf("approve status = %d, want 200", approveResp.StatusCode)
+	}
+	approveResp.Body.Close()
+
+	// Read tool call result
+	resp := <-done
+	if resp.StatusCode != 200 {
+		t.Errorf("tool call status = %d, want 200", resp.StatusCode)
+	}
+	var toolResp ToolCallResponse
+	json.NewDecoder(resp.Body).Decode(&toolResp)
+	resp.Body.Close()
+
+	if toolResp.ApprovalID == "" {
+		t.Error("expected approval_id in response")
+	}
+	if toolResp.Policy != "human_approval" {
+		t.Errorf("policy = %q, want human_approval", toolResp.Policy)
+	}
+}
+
+func TestHandleToolCallDeniedApproval(t *testing.T) {
+	handler, _ := approvalHandler(t)
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	done := make(chan *http.Response, 1)
+	go func() {
+		resp, _ := http.Post(srv.URL+"/tool/risky_tool", "application/json",
+			strings.NewReader(`{"params":{}}`))
+		done <- resp
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+
+	list := listPending(t, srv.URL)
+	if len(list) != 1 {
+		t.Fatalf("pending = %d, want 1", len(list))
+	}
+
+	// Deny
+	denyResp, _ := http.Post(srv.URL+"/approvals/"+list[0].ID+"/deny",
+		"application/json", strings.NewReader(`{"resolved_by":"admin"}`))
+	if denyResp.StatusCode != 200 {
+		t.Fatalf("deny status = %d", denyResp.StatusCode)
+	}
+	denyResp.Body.Close()
+
+	resp := <-done
+	if resp.StatusCode != 403 {
+		t.Errorf("tool call status = %d, want 403", resp.StatusCode)
+	}
+	resp.Body.Close()
+}
+
+func TestHandleToolCallApprovalTimeout(t *testing.T) {
+	reg := registry.New()
+	reg.LoadManual(&registry.Tool{Name: "risky_tool", Source: "openapi"})
+
+	pol := policy.NewEngine([]config.Policy{
+		{Name: "approval", Agent: "*", Rules: []config.Rule{
+			{Tools: []string{"risky_tool"}, Action: "human_approval"},
+		}},
+	})
+
+	handler := NewHandler(reg, pol, trace.NewStore(100))
+	handler.Approvals = approval.NewStore(100 * time.Millisecond)
+
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+
+	resp, err := http.Post(srv.URL+"/tool/risky_tool", "application/json",
+		strings.NewReader(`{"params":{}}`))
+	if err != nil {
+		t.Fatalf("tool call: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 408 {
+		t.Errorf("status = %d, want 408 (timeout)", resp.StatusCode)
+	}
+}
+
+func TestHandleApprovalNotFound(t *testing.T) {
+	handler, _ := approvalHandler(t)
+
+	req := httptest.NewRequest("POST", "/approvals/nonexistent/approve",
+		strings.NewReader(`{}`))
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != 404 {
+		t.Errorf("status = %d, want 404", w.Code)
+	}
+}
+
+func TestHandleApprovalAlreadyResolved(t *testing.T) {
+	handler, _ := approvalHandler(t)
+
+	pa := handler.Approvals.Submit("claude", "tool", "rule", nil)
+	handler.Approvals.Approve(pa.ID, "first")
+
+	req := httptest.NewRequest("POST", "/approvals/"+pa.ID+"/approve",
+		strings.NewReader(`{}`))
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != 409 {
+		t.Errorf("status = %d, want 409", w.Code)
+	}
+}
+
+func TestHandleGetApproval(t *testing.T) {
+	handler, _ := approvalHandler(t)
+
+	pa := handler.Approvals.Submit("claude", "write_file", "rule-1", map[string]any{"path": "/tmp/x"})
+
+	req := httptest.NewRequest("GET", "/approvals/"+pa.ID, nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != 200 {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+
+	var view approvalView
+	json.NewDecoder(w.Body).Decode(&view)
+	if view.Tool != "write_file" {
+		t.Errorf("tool = %q, want write_file", view.Tool)
+	}
+	if view.Status != "pending" {
+		t.Errorf("status = %q, want pending", view.Status)
+	}
+}
+
+func TestHandleGetApprovalNotFound(t *testing.T) {
+	handler, _ := approvalHandler(t)
+
+	req := httptest.NewRequest("GET", "/approvals/nope", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != 404 {
+		t.Errorf("status = %d, want 404", w.Code)
+	}
+}
+
+func listPending(t *testing.T, baseURL string) []approvalView {
+	t.Helper()
+	resp, err := http.Get(baseURL + "/approvals?status=pending")
+	if err != nil {
+		t.Fatalf("list pending: %v", err)
+	}
+	defer resp.Body.Close()
+	var list []approvalView
+	json.NewDecoder(resp.Body).Decode(&list)
+	return list
 }
 
 func TestForwardHTTPSpecialCharsInParams(t *testing.T) {

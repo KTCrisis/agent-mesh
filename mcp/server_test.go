@@ -6,7 +6,9 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/KTCrisis/agent-mesh/approval"
 	"github.com/KTCrisis/agent-mesh/config"
 	"github.com/KTCrisis/agent-mesh/policy"
 	"github.com/KTCrisis/agent-mesh/proxy"
@@ -258,5 +260,187 @@ func TestServerToolsCallMissingName(t *testing.T) {
 	}
 	if responses[0].Error == nil {
 		t.Fatal("expected error for missing tool name")
+	}
+}
+
+// --- Approval tests ---
+
+func approvalServer() *Server {
+	reg := registry.New()
+	reg.LoadManual(&registry.Tool{
+		Name: "risky_tool", Description: "Risky", Source: "openapi",
+	})
+
+	pol := policy.NewEngine([]config.Policy{
+		{Name: "approval-policy", Agent: "*", Rules: []config.Rule{
+			{Tools: []string{"risky_tool"}, Action: "human_approval"},
+		}},
+	})
+
+	traces := trace.NewStore(100)
+	handler := proxy.NewHandler(reg, pol, traces)
+
+	return &Server{
+		Registry:  reg,
+		Policy:    pol,
+		Traces:    traces,
+		Approvals: approval.NewStore(5 * time.Second),
+		Handler:   handler,
+		AgentID:   "claude",
+	}
+}
+
+// sendRPCAsync sends a single request to the MCP server and returns the response
+// via a channel. The server runs in a goroutine so the caller can resolve approvals
+// before reading the response.
+func sendRPCAsync(t *testing.T, s *Server, req rpcRequest) chan rpcResponse {
+	t.Helper()
+
+	inR, inW := io.Pipe()
+	var output bytes.Buffer
+	done := make(chan rpcResponse, 1)
+
+	go func() {
+		s.Serve(inR, &output)
+		var resp rpcResponse
+		json.NewDecoder(&output).Decode(&resp)
+		done <- resp
+	}()
+
+	data, _ := json.Marshal(req)
+	inW.Write(data)
+	inW.Write([]byte("\n"))
+
+	// Close input after a small delay to let Serve process the request.
+	// The response will be written before Serve tries to read the next line.
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		inW.Close()
+	}()
+
+	return done
+}
+
+func TestServerApprovalApproved(t *testing.T) {
+	s := approvalServer()
+
+	respCh := sendRPCAsync(t, s, rpcRequest{
+		JSONRPC: "2.0", ID: float64(1), Method: "tools/call",
+		Params: map[string]any{
+			"name":      "risky_tool",
+			"arguments": map[string]any{},
+		},
+	})
+
+	// Wait for approval to be submitted
+	time.Sleep(30 * time.Millisecond)
+
+	pending := s.Approvals.ListPending()
+	if len(pending) != 1 {
+		t.Fatalf("pending = %d, want 1", len(pending))
+	}
+
+	if err := s.Approvals.Approve(pending[0].ID, "tester"); err != nil {
+		t.Fatalf("Approve: %v", err)
+	}
+
+	resp := <-respCh
+	if resp.Error != nil {
+		t.Fatalf("RPC error: %v", resp.Error)
+	}
+
+	// The response should NOT contain "denied" or "timed out"
+	result, _ := resp.Result.(map[string]any)
+	content, _ := result["content"].([]any)
+	if len(content) == 0 {
+		t.Fatal("expected content")
+	}
+	first, _ := content[0].(map[string]any)
+	text, _ := first["text"].(string)
+	if strings.Contains(text, "denied") || strings.Contains(text, "timed out") {
+		t.Errorf("unexpected text: %s", text)
+	}
+}
+
+func TestServerApprovalDenied(t *testing.T) {
+	s := approvalServer()
+
+	respCh := sendRPCAsync(t, s, rpcRequest{
+		JSONRPC: "2.0", ID: float64(1), Method: "tools/call",
+		Params: map[string]any{
+			"name":      "risky_tool",
+			"arguments": map[string]any{},
+		},
+	})
+
+	time.Sleep(30 * time.Millisecond)
+
+	pending := s.Approvals.ListPending()
+	if len(pending) != 1 {
+		t.Fatalf("pending = %d, want 1", len(pending))
+	}
+
+	s.Approvals.Deny(pending[0].ID, "admin")
+
+	resp := <-respCh
+	result, _ := resp.Result.(map[string]any)
+	content, _ := result["content"].([]any)
+	first, _ := content[0].(map[string]any)
+	text, _ := first["text"].(string)
+	if !strings.Contains(text, "denied") {
+		t.Errorf("expected 'denied' in text, got: %s", text)
+	}
+}
+
+func TestServerApprovalTimeout(t *testing.T) {
+	s := approvalServer()
+	s.Approvals = approval.NewStore(100 * time.Millisecond)
+
+	respCh := sendRPCAsync(t, s, rpcRequest{
+		JSONRPC: "2.0", ID: float64(1), Method: "tools/call",
+		Params: map[string]any{
+			"name":      "risky_tool",
+			"arguments": map[string]any{},
+		},
+	})
+
+	resp := <-respCh
+	result, _ := resp.Result.(map[string]any)
+	content, _ := result["content"].([]any)
+	first, _ := content[0].(map[string]any)
+	text, _ := first["text"].(string)
+	if !strings.Contains(text, "timed out") {
+		t.Errorf("expected 'timed out' in text, got: %s", text)
+	}
+}
+
+func TestServerApprovalFallbackNoStore(t *testing.T) {
+	s := testServer()
+	// Add a tool with human_approval policy but no Approvals store
+	s.Registry.LoadManual(&registry.Tool{Name: "needs_approval", Source: "openapi"})
+	s.Policy = policy.NewEngine([]config.Policy{
+		{Name: "test", Agent: "*", Rules: []config.Rule{
+			{Tools: []string{"needs_approval"}, Action: "human_approval"},
+		}},
+	})
+
+	responses := sendRPC(t, s, rpcRequest{
+		JSONRPC: "2.0", ID: float64(1), Method: "tools/call",
+		Params: map[string]any{
+			"name":      "needs_approval",
+			"arguments": map[string]any{},
+		},
+	})
+
+	if len(responses) != 1 {
+		t.Fatalf("responses = %d, want 1", len(responses))
+	}
+
+	result, _ := responses[0].Result.(map[string]any)
+	content, _ := result["content"].([]any)
+	first, _ := content[0].(map[string]any)
+	text, _ := first["text"].(string)
+	if !strings.Contains(text, "human approval") {
+		t.Errorf("expected fallback text, got: %s", text)
 	}
 }

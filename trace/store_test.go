@@ -96,6 +96,48 @@ func TestStats(t *testing.T) {
 	}
 }
 
+func TestUpdate(t *testing.T) {
+	s := NewStore(100)
+	s.Record(Entry{AgentID: "bot", Tool: "write_file", Policy: "human_approval"})
+
+	entries := s.Query("", "", 1)
+	traceID := entries[0].TraceID
+
+	found := s.Update(traceID, func(e *Entry) {
+		e.ApprovalID = "appr-001"
+		e.ApprovalStatus = "approved"
+		e.ApprovedBy = "marc"
+		e.ApprovalMs = 3200
+	})
+	if !found {
+		t.Fatal("Update should find the entry")
+	}
+
+	entries = s.Query("", "", 1)
+	if entries[0].ApprovalID != "appr-001" {
+		t.Errorf("approval_id = %q, want appr-001", entries[0].ApprovalID)
+	}
+	if entries[0].ApprovalStatus != "approved" {
+		t.Errorf("approval_status = %q, want approved", entries[0].ApprovalStatus)
+	}
+	if entries[0].ApprovedBy != "marc" {
+		t.Errorf("approved_by = %q, want marc", entries[0].ApprovedBy)
+	}
+	if entries[0].ApprovalMs != 3200 {
+		t.Errorf("approval_ms = %d, want 3200", entries[0].ApprovalMs)
+	}
+}
+
+func TestUpdateNotFound(t *testing.T) {
+	s := NewStore(100)
+	found := s.Update("nonexistent", func(e *Entry) {
+		e.ApprovalStatus = "approved"
+	})
+	if found {
+		t.Error("Update should return false for nonexistent ID")
+	}
+}
+
 func TestPersistentStore(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "traces.jsonl")
 

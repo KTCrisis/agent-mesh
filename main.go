@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/KTCrisis/agent-mesh/approval"
 	"github.com/KTCrisis/agent-mesh/config"
 	"github.com/KTCrisis/agent-mesh/mcp"
 	"github.com/KTCrisis/agent-mesh/policy"
@@ -96,10 +97,16 @@ func main() {
 		slog.Info("trace store ready", "mode", "in-memory")
 	}
 
-	// 5. Build handler
-	handler := proxy.NewHandler(reg, pol, traces)
+	// 5. Build approval store
+	approvalTimeout := time.Duration(cfg.Approval.TimeoutSeconds) * time.Second
+	approvals := approval.NewStore(approvalTimeout)
+	slog.Info("approval store ready", "timeout", approvalTimeout)
 
-	// 6. Connect upstream MCP servers
+	// 6. Build handler
+	handler := proxy.NewHandler(reg, pol, traces)
+	handler.Approvals = approvals
+
+	// 7. Connect upstream MCP servers
 	var mcpManager *mcp.Manager
 	if len(cfg.MCPServers) > 0 {
 		mcpManager = mcp.NewManager()
@@ -135,16 +142,27 @@ func main() {
 		slog.Info("MCP upstream servers connected", "count", len(mcpManager.All()))
 	}
 
-	// 7. MCP mode or HTTP mode
+	// 8. MCP mode or HTTP mode
 	if *mcpMode {
 		// MCP: JSON-RPC over stdio — logs go to stderr to keep stdout clean
 		slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})))
+
+		// Start HTTP server in background for approval API
+		addr := fmt.Sprintf(":%d", cfg.Port)
+		go func() {
+			slog.Info("approval API available", "url", fmt.Sprintf("http://localhost%s/approvals", addr))
+			if err := http.ListenAndServe(addr, handler); err != nil {
+				slog.Error("approval HTTP server failed", "error", err)
+			}
+		}()
+
 		server := &mcp.Server{
-			Registry: reg,
-			Policy:   pol,
-			Traces:   traces,
-			Handler:  handler,
-			AgentID:  *mcpAgent,
+			Registry:  reg,
+			Policy:    pol,
+			Traces:    traces,
+			Approvals: approvals,
+			Handler:   handler,
+			AgentID:   *mcpAgent,
 		}
 		if err := server.Run(); err != nil {
 			slog.Error("MCP server failed", "error", err)
@@ -156,6 +174,7 @@ func main() {
 		slog.Info("endpoints",
 			"tool_call", fmt.Sprintf("POST http://localhost%s/tool/{name}", addr),
 			"list_tools", fmt.Sprintf("GET  http://localhost%s/tools", addr),
+			"approvals", fmt.Sprintf("GET  http://localhost%s/approvals", addr),
 			"mcp_servers", fmt.Sprintf("GET  http://localhost%s/mcp-servers", addr),
 			"traces", fmt.Sprintf("GET  http://localhost%s/traces", addr),
 			"health", fmt.Sprintf("GET  http://localhost%s/health", addr),

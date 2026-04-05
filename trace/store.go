@@ -23,6 +23,12 @@ type Entry struct {
 	LatencyMs  int64          `json:"latency_ms"`
 	Error      string         `json:"error,omitempty"`
 	Timestamp  time.Time      `json:"timestamp"`
+
+	// Approval fields (populated when policy = human_approval)
+	ApprovalID     string `json:"approval_id,omitempty"`
+	ApprovalStatus string `json:"approval_status,omitempty"` // approved, denied, timeout
+	ApprovedBy     string `json:"approved_by,omitempty"`
+	ApprovalMs     int64  `json:"approval_ms,omitempty"`
 }
 
 // Store is a thread-safe trace store with optional JSONL file persistence.
@@ -147,6 +153,21 @@ func (s *Store) Query(agent string, tool string, limit int) []Entry {
 		result = append(result, e)
 	}
 	return result
+}
+
+// Update finds a trace entry by TraceID and applies fn to mutate it.
+// Returns true if the entry was found and updated.
+func (s *Store) Update(traceID string, fn func(*Entry)) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for i := len(s.entries) - 1; i >= 0; i-- {
+		if s.entries[i].TraceID == traceID {
+			fn(&s.entries[i])
+			return true
+		}
+	}
+	return false
 }
 
 // Stats returns aggregate counts.

@@ -9,8 +9,14 @@ import (
 type Config struct {
 	Port       int               `yaml:"port"`
 	TraceFile  string            `yaml:"trace_file"`
+	Approval   ApprovalConfig    `yaml:"approval"`
 	Policies   []Policy          `yaml:"policies"`
 	MCPServers []MCPServerConfig `yaml:"mcp_servers"`
+}
+
+// ApprovalConfig controls the human approval gate behavior.
+type ApprovalConfig struct {
+	TimeoutSeconds int `yaml:"timeout_seconds"` // default 300 (5 min)
 }
 
 // MCPServerConfig declares an upstream MCP server to connect to.
@@ -53,6 +59,9 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.Port == 0 {
 		cfg.Port = 9090
+	}
+	if cfg.Approval.TimeoutSeconds == 0 {
+		cfg.Approval.TimeoutSeconds = 300
 	}
 	return &cfg, nil
 }
