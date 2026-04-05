@@ -24,7 +24,9 @@ policies:
   - name: claude
     agent: "claude"
     rules:
-      # Filesystem — read only
+      # ── Filesystem ──
+
+      # Read operations — always allowed
       - tools:
           [
             "filesystem.directory_tree",
@@ -39,16 +41,23 @@ policies:
             "filesystem.search_files",
           ]
         action: allow
+
+      # Write operations — human approval required (not denied)
       - tools:
           [
-            "filesystem.create_directory",
             "filesystem.edit_file",
-            "filesystem.move_file",
             "filesystem.write_file",
+            "filesystem.create_directory",
           ]
+        action: human_approval
+
+      # Move/rename — denied (destructive, hard to undo)
+      - tools: ["filesystem.move_file"]
         action: deny
 
-      # Gmail — read only
+      # ── Gmail ──
+
+      # Read operations — always allowed
       - tools:
           [
             "gmail.gmail_read_email",
@@ -59,20 +68,30 @@ policies:
             "gmail.gmail_get_vacation_responder",
           ]
         action: allow
-      # Gmail — all write/modify/delete operations blocked
+
+      # Low-risk write — human approval (draft, label, mark read)
       - tools:
           [
-            "gmail.gmail_send_email",
             "gmail.gmail_draft_email",
-            "gmail.gmail_delete_email",
-            "gmail.gmail_delete_label",
             "gmail.gmail_create_label",
             "gmail.gmail_update_label",
-            "gmail.gmail_archive_email",
-            "gmail.gmail_move_to_trash",
-            "gmail.gmail_recover_from_trash",
             "gmail.gmail_mark_as_read",
             "gmail.gmail_mark_as_unread",
+            "gmail.gmail_archive_email",
+          ]
+        action: human_approval
+
+      # Send email — human approval (visible action, but useful)
+      - tools: ["gmail.gmail_send_email"]
+        action: human_approval
+
+      # Destructive — denied (delete, trash, batch ops, forwarding)
+      - tools:
+          [
+            "gmail.gmail_delete_email",
+            "gmail.gmail_delete_label",
+            "gmail.gmail_move_to_trash",
+            "gmail.gmail_recover_from_trash",
             "gmail.gmail_modify_email",
             "gmail.gmail_set_vacation_responder",
             "gmail.gmail_update_forwarding",

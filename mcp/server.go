@@ -9,6 +9,7 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/KTCrisis/agent-mesh/approval"
 	"github.com/KTCrisis/agent-mesh/policy"
@@ -170,6 +171,27 @@ func (s *Server) handleToolsList() map[string]any {
 		})
 	}
 
+	// Append virtual approval tools
+	mcpTools = append(mcpTools, MCPTool{
+		Name:        "approval.resolve",
+		Description: "Approve or deny a pending approval request",
+		InputSchema: MCPSchema{
+			Type: "object",
+			Properties: map[string]MCPProp{
+				"id":       {Type: "string", Description: "Approval ID (full or 8-char prefix)"},
+				"decision": {Type: "string", Description: "Decision: approve or deny"},
+			},
+			Required: []string{"id", "decision"},
+		},
+	}, MCPTool{
+		Name:        "approval.pending",
+		Description: "List all pending approval requests",
+		InputSchema: MCPSchema{
+			Type:       "object",
+			Properties: map[string]MCPProp{},
+		},
+	})
+
 	return map[string]any{"tools": mcpTools}
 }
 
@@ -179,6 +201,14 @@ func (s *Server) handleToolsCall(params map[string]any) (any, *rpcError) {
 
 	if toolName == "" {
 		return nil, &rpcError{Code: -32602, Message: "Missing tool name"}
+	}
+
+	// Virtual tools — handled before registry lookup, no policy evaluation
+	switch toolName {
+	case "approval.resolve":
+		return s.handleApprovalResolve(arguments)
+	case "approval.pending":
+		return s.handleApprovalPending()
 	}
 
 	// Look up tool
@@ -263,12 +293,12 @@ func (s *Server) handleToolsCall(params map[string]any) (any, *rpcError) {
 			}, nil
 		}
 
-		// No TTY available — fall back to approval store (blocking or static message)
+		// No TTY available — return immediately with approval ID (non-blocking)
 		if s.Approvals == nil {
 			s.Traces.Record(entry)
 			return map[string]any{
 				"content": []map[string]any{
-					{"type": "text", "text": "This action requires human approval. Please confirm in the dashboard."},
+					{"type": "text", "text": "This action requires human approval but no approval store is configured."},
 				},
 			}, nil
 		}
@@ -276,56 +306,20 @@ func (s *Server) handleToolsCall(params map[string]any) (any, *rpcError) {
 		pending := s.Approvals.Submit(s.AgentID, toolName, decision.Rule, arguments)
 		entry.ApprovalID = pending.ID
 		s.Traces.Record(entry)
+		pending.TraceID = entry.TraceID
 
-		slog.Info("MCP awaiting human approval",
+		shortID := pending.ID[:8]
+		slog.Info("MCP approval submitted (non-blocking)",
 			"approval_id", pending.ID, "agent", s.AgentID, "tool", toolName)
 
-		// Block until resolved via HTTP API
-		resolution := <-pending.Result
-
-		s.Traces.Update(entry.TraceID, func(e *trace.Entry) {
-			e.ApprovalStatus = string(resolution.Status)
-			e.ApprovedBy = resolution.ResolvedBy
-			e.ApprovalMs = resolution.ResolvedAt.Sub(pending.CreatedAt).Milliseconds()
-		})
-
-		switch resolution.Status {
-		case approval.StatusApproved:
-			result, statusCode, err := s.Handler.Forward(tool, arguments)
-			s.Traces.Update(entry.TraceID, func(e *trace.Entry) {
-				e.StatusCode = statusCode
-				if err != nil {
-					e.Error = err.Error()
-				}
-			})
-			if err != nil {
-				return map[string]any{
-					"content": []map[string]any{
-						{"type": "text", "text": fmt.Sprintf("Backend error: %s", err.Error())},
-					},
-				}, nil
-			}
-			resultJSON, _ := json.MarshalIndent(result, "", "  ")
-			return map[string]any{
-				"content": []map[string]any{
-					{"type": "text", "text": string(resultJSON)},
-				},
-			}, nil
-
-		case approval.StatusDenied:
-			return map[string]any{
-				"content": []map[string]any{
-					{"type": "text", "text": fmt.Sprintf("Approval denied by %s", resolution.ResolvedBy)},
-				},
-			}, nil
-
-		case approval.StatusTimeout:
-			return map[string]any{
-				"content": []map[string]any{
-					{"type": "text", "text": "Approval timed out — action not taken"},
-				},
-			}, nil
-		}
+		return map[string]any{
+			"content": []map[string]any{
+				{"type": "text", "text": fmt.Sprintf(
+					"⏳ Approval required.\n  ID: %s\n  Tool: %s\n  Agent: %s\n\nUse approval.resolve with {\"id\": \"%s\", \"decision\": \"approve\"} or {\"id\": \"%s\", \"decision\": \"deny\"}.",
+					shortID, toolName, s.AgentID, shortID, shortID,
+				)},
+			},
+		}, nil
 	}
 
 	// Forward to backend
@@ -365,6 +359,128 @@ func (s *Server) handleToolsCall(params map[string]any) (any, *rpcError) {
 	return map[string]any{
 		"content": []map[string]any{
 			{"type": "text", "text": string(resultJSON)},
+		},
+	}, nil
+}
+
+func (s *Server) handleApprovalResolve(args map[string]any) (any, *rpcError) {
+	id, _ := args["id"].(string)
+	decision, _ := args["decision"].(string)
+
+	if id == "" {
+		return nil, &rpcError{Code: -32602, Message: "Missing 'id' parameter"}
+	}
+	if decision != "approve" && decision != "deny" {
+		return nil, &rpcError{Code: -32602, Message: "Invalid 'decision': must be 'approve' or 'deny'"}
+	}
+
+	if s.Approvals == nil {
+		return nil, &rpcError{Code: -32000, Message: "No approval store configured"}
+	}
+
+	pa := s.Approvals.Get(id)
+	if pa == nil {
+		return nil, &rpcError{Code: -32602, Message: fmt.Sprintf("Approval not found: %s", id)}
+	}
+
+	resolvedBy := "mcp:" + s.AgentID
+
+	if decision == "deny" {
+		if err := s.Approvals.Deny(id, resolvedBy); err != nil {
+			return map[string]any{
+				"content": []map[string]any{
+					{"type": "text", "text": fmt.Sprintf("Cannot resolve: %s", err.Error())},
+				},
+			}, nil
+		}
+		if pa.TraceID != "" {
+			s.Traces.Update(pa.TraceID, func(e *trace.Entry) {
+				e.ApprovalStatus = string(approval.StatusDenied)
+				e.ApprovedBy = resolvedBy
+				e.ApprovalMs = time.Since(pa.CreatedAt).Milliseconds()
+			})
+		}
+		return map[string]any{
+			"content": []map[string]any{
+				{"type": "text", "text": fmt.Sprintf("Denied. Tool %s was not executed.", pa.Tool)},
+			},
+		}, nil
+	}
+
+	// Approve: resolve then replay the original tool call
+	if err := s.Approvals.Approve(id, resolvedBy); err != nil {
+		return map[string]any{
+			"content": []map[string]any{
+				{"type": "text", "text": fmt.Sprintf("Cannot resolve: %s", err.Error())},
+			},
+		}, nil
+	}
+
+	tool := s.Registry.Get(pa.Tool)
+	if tool == nil {
+		return map[string]any{
+			"content": []map[string]any{
+				{"type": "text", "text": fmt.Sprintf("Approved but tool %s no longer exists in registry.", pa.Tool)},
+			},
+		}, nil
+	}
+
+	result, statusCode, err := s.Handler.Forward(tool, pa.Params)
+	if pa.TraceID != "" {
+		s.Traces.Update(pa.TraceID, func(e *trace.Entry) {
+			e.ApprovalStatus = string(approval.StatusApproved)
+			e.ApprovedBy = resolvedBy
+			e.ApprovalMs = time.Since(pa.CreatedAt).Milliseconds()
+			e.StatusCode = statusCode
+			if err != nil {
+				e.Error = err.Error()
+			}
+		})
+	}
+
+	if err != nil {
+		return map[string]any{
+			"content": []map[string]any{
+				{"type": "text", "text": fmt.Sprintf("Approved but backend error: %s", err.Error())},
+			},
+		}, nil
+	}
+
+	resultJSON, _ := json.MarshalIndent(result, "", "  ")
+	return map[string]any{
+		"content": []map[string]any{
+			{"type": "text", "text": string(resultJSON)},
+		},
+	}, nil
+}
+
+func (s *Server) handleApprovalPending() (any, *rpcError) {
+	if s.Approvals == nil {
+		return map[string]any{
+			"content": []map[string]any{
+				{"type": "text", "text": "No approval store configured."},
+			},
+		}, nil
+	}
+
+	pending := s.Approvals.ListPending()
+	if len(pending) == 0 {
+		return map[string]any{
+			"content": []map[string]any{
+				{"type": "text", "text": "No pending approvals."},
+			},
+		}, nil
+	}
+
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Pending approvals (%d):\n", len(pending))
+	for _, pa := range pending {
+		age := time.Since(pa.CreatedAt).Truncate(time.Second)
+		fmt.Fprintf(&sb, "- ID: %s  tool: %s  agent: %s  age: %s\n", pa.ID[:8], pa.Tool, pa.AgentID, age)
+	}
+	return map[string]any{
+		"content": []map[string]any{
+			{"type": "text", "text": sb.String()},
 		},
 	}, nil
 }

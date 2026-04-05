@@ -33,6 +33,7 @@ type PendingApproval struct {
 	Tool       string         `json:"tool"`
 	Params     map[string]any `json:"params"`
 	PolicyRule string         `json:"policy_rule"`
+	TraceID    string         `json:"trace_id,omitempty"`
 	Status     Status         `json:"status"`
 	CreatedAt  time.Time      `json:"created_at"`
 	ResolvedBy string         `json:"resolved_by,omitempty"`
