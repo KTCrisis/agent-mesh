@@ -1,5 +1,5 @@
 {
   "name": "agent-mesh",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "description": "Agent sidecar proxy — policy enforcement, tracing, and approval for AI agents"
 }
