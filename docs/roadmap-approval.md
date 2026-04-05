@@ -1,154 +1,24 @@
 # Roadmap: Human Approval → Agent Supervisor
 
-**Date**: 2026-04-05
-**Baseline**: functional PoC with policy engine, MCP server, HTTP proxy, traces
+**Date**: 2026-04-05 (updated)
+**Baseline**: v0.3.2 — async non-blocking approval for MCP, TTY prompt, CLI, HTTP API
 
 Each phase produces a **shippable increment** — independently useful, testable, demo-able.
 
 ---
 
-## Phase 1 — Approval Store + Sync Mode
-**Effort**: ~2-3 sessions | **Milestone**: Claude Code approval flow works end-to-end
+## Phase 1-4 — DONE (v0.3.0–v0.3.2)
 
-### What
-The core approval primitive: submit, block, resolve.
+Approval store, HTTP API, CLI, MCP virtual tools, TTY prompt, non-blocking MCP mode.
 
-### Deliverables
-| File | What |
-|------|------|
-| `approval/store.go` | `PendingApproval` struct, `Submit()`, `Approve()`, `Deny()`, `Pending()`, `Get()` |
-| `approval/store_test.go` | Concurrent submit/resolve, timeout auto-deny, double-resolve idempotent |
-| `mcp/server.go` | Wire `human_approval` → submit + block on channel + forward on approve |
-| `trace/store.go` | Add `ApprovalID`, `ApprovalStatus`, `ApprovedBy`, `ApprovalMs` fields |
+| Version | What shipped |
+|---------|-------------|
+| **v0.3.0** | Approval store, channel blocking, HTTP API, `approval.resolve` + `approval.pending` virtual MCP tools, `mesh` CLI (pending/show/approve/deny/watch), trace enrichment |
+| **v0.3.1** | TTY prompt via `/dev/tty`, auto-skip in piped mode, MCP fallback to store channel |
+| **v0.3.2** | Non-blocking MCP handler — return pending message immediately instead of blocking. `approval.resolve` replays original tool call on approve. Claude Code stays responsive. |
 
-### Behavior
-- MCP `tools/call` with `human_approval` policy → connection held
-- `slog.Warn` to stderr: `APPROVAL REQUIRED id=abc tool=filesystem.write_file`
-- Timeout (default 5m) → auto-deny, response sent
-- No way to approve yet (next phase) — this validates the blocking mechanism
-
-### Tests
-- Submit + approve → result forwarded
-- Submit + deny → error returned
-- Submit + timeout → auto-deny
-- Submit + approve after timeout → no-op (idempotent)
-- Concurrent submits don't deadlock
-
----
-
-## Phase 2 — HTTP Approval API
-**Effort**: ~1-2 sessions | **Milestone**: `curl` can approve pending requests
-
-### What
-REST endpoints to list and resolve approvals. First usable approval flow.
-
-### Deliverables
-| File | What |
-|------|------|
-| `proxy/handler.go` | New routes: `GET /approvals`, `GET /approvals/{id}`, `POST /approvals/{id}/approve`, `POST /approvals/{id}/deny` |
-| `proxy/handler_test.go` | Integration tests for approval endpoints |
-
-### Behavior
-```bash
-# Terminal 1: Claude Code session hits approval gate, connection held
-# Terminal 2:
-curl localhost:9090/approvals | jq
-curl -X POST localhost:9090/approvals/abc123/approve
-# Terminal 1: tool call completes with result
-```
-
-### Tests
-- List pending returns correct entries
-- Approve resolves the pending entry + unblocks MCP handler
-- Deny resolves + returns error to MCP
-- Approve unknown ID → 404
-- Approve already resolved → 409 idempotent
-
-### Demo checkpoint
-**First end-to-end demo**: Claude Code → agent-mesh → approval gate → curl approve → result flows back. This is the "it works" moment.
-
----
-
-## Phase 3 — Async Mode (HTTP Proxy)
-**Effort**: ~1-2 sessions | **Milestone**: HTTP agents get 202 + can poll for result
-
-### What
-Non-blocking approval for HTTP agents. Forward-on-approve with result storage.
-
-### Deliverables
-| File | What |
-|------|------|
-| `proxy/handler.go` | `handleToolCall`: return 202 for `human_approval` instead of blocking |
-| `approval/store.go` | `StoreResult()`, `GetResult()`, forward-on-approve goroutine |
-| `proxy/handler.go` | New routes: `GET /approvals/{id}/result`, `GET /approvals/{id}/result?wait=true` |
-| `proxy/handler_test.go` | Async flow tests |
-
-### Behavior
-```bash
-# Agent sends tool call via HTTP
-POST /tool/filesystem.write_file → 202 {approval_id: "abc", status: "pending"}
-
-# Agent polls later
-GET /approvals/abc/result → 404 {status: "pending"}
-
-# Human approves
-POST /approvals/abc/approve → 200
-
-# Agent polls again
-GET /approvals/abc/result → 200 {status: "approved", result: {...}}
-```
-
-### Tests
-- POST tool call → 202 with approval_id
-- GET result before approval → 404 pending
-- Approve → forward happens → result stored
-- GET result after approval → 200 with upstream result
-- Long-poll: `?wait=true` blocks until resolved
-- Result TTL: entries evicted after 1h
-
----
-
-## Phase 4 — CLI (`mesh` commands)
-**Effort**: ~2 sessions | **Milestone**: `mesh approve` replaces curl
-
-### What
-Developer-friendly CLI wrapping the HTTP API. Single binary with subcommands.
-
-### Deliverables
-| File | What |
-|------|------|
-| `cmd/mesh/main.go` | CLI entry point, subcommand routing |
-| `cmd/mesh/pending.go` | `mesh pending` — list pending approvals (table format) |
-| `cmd/mesh/show.go` | `mesh show <id>` — full details with params |
-| `cmd/mesh/approve.go` | `mesh approve <id>` / `mesh approve --all` |
-| `cmd/mesh/deny.go` | `mesh deny <id>` |
-
-### Behavior
-```bash
-mesh pending
-# ID        AGE    AGENT   TOOL                      REMAINING
-# a1b2c3d4  12s    claude  filesystem.write_file      4m48s
-
-mesh show a1b2c3d4
-# Agent:   claude
-# Tool:    filesystem.write_file
-# Path:    /home/user/project/src/main.go
-# Content: (142 bytes, text/plain)
-# Policy:  claude / rule #3
-# Age:     12s / timeout 5m
-
-mesh approve a1b2c3d4
-# ✓ Approved: a1b2c3d4 (filesystem.write_file)
-```
-
-### Build
-```bash
-go build -o mesh ./cmd/mesh    # separate binary
-# or
-agent-mesh approve <id>        # subcommand of main binary
-```
-
-Decision: subcommand of main binary is simpler (one binary to distribute). `agent-mesh pending`, `agent-mesh approve`. Alias `mesh` via shell.
+### Key design decision (v0.3.2)
+The original sync/blocking design froze Claude Code for up to 5 minutes. The async approach returns immediately and lets the LLM agent self-resolve via `approval.resolve`. Transparency beats invisibility for LLM agents.
 
 ---
 
@@ -347,40 +217,37 @@ The existing roadmap (from CLAUDE.md) has items that interleave:
 | PostgreSQL traces | Useful before Phase 10 (calibration needs queryable history) |
 | Public demo | After Phase 4 (CLI demo is the most compelling) |
 
-Suggested interleaving:
+Suggested sequencing from here:
 
 ```
-Phase 1-2: Approval store + HTTP API        ← core, do first
-Phase 3:   Async mode
-Phase 4:   CLI                               ← public demo candidate
+DONE:      Phases 1-4 (approval store, HTTP API, CLI, async MCP)
+Phase 5:   Async HTTP proxy (202 + poll)
            SSE transport                     ← can parallel
-Phase 5:   Callbacks + webhooks
-Phase 6:   Temporal grants
-           JWT agent credentials             ← needed for Phase 8
-Phase 7:   TUI
-Phase 8:   Supervisor protocol
-           PostgreSQL traces                 ← needed for Phase 10
-Phase 9:   Reference supervisor
-Phase 10:  Calibration
+Phase 6:   Callbacks + webhooks
+Phase 7:   Temporal grants
+           JWT agent credentials             ← needed for Phase 9
+Phase 8:   TUI upgrade
+Phase 9:   Supervisor protocol
+           PostgreSQL traces                 ← needed for Phase 11
+Phase 10:  Reference supervisor
+Phase 11:  Calibration
 ```
 
 ---
 
 ## Summary
 
-| Phase | Deliverable | Key metric |
-|-------|------------|------------|
-| **1** | Approval store + sync blocking | MCP handler blocks + resolves |
-| **2** | HTTP API for approvals | `curl approve` unblocks Claude Code |
-| **3** | Async mode (202 + poll) | HTTP agents not blocked |
-| **4** | CLI (`mesh` commands) | Developer UX for approval |
-| **5** | Callbacks + webhooks | Push notifications |
-| **6** | Temporal grants | Approval fatigue reduction |
-| **7** | TUI (`mesh watch`) | Live approval dashboard |
-| **8** | Supervisor protocol | Structured verdicts, content isolation |
-| **9** | Reference supervisor | Working agent-as-approver |
-| **10** | Calibration | Supervisor quality metrics |
+| Phase | Deliverable | Status |
+|-------|------------|--------|
+| **1-4** | Approval store, HTTP API, CLI, MCP async mode | **DONE** (v0.3.0–v0.3.2) |
+| **5** | Async HTTP proxy (202 + poll + callback) | Next |
+| **6** | Callbacks + webhooks | Planned |
+| **7** | Temporal grants | Planned |
+| **8** | TUI (`mesh watch` upgrade) | Planned |
+| **9** | Supervisor protocol | Planned |
+| **10** | Reference supervisor | Planned |
+| **11** | Calibration | Planned |
 
-Phases 1-4 = **human approval complete** (shippable, demo-able, differentiating).
-Phases 5-7 = **human approval polished** (UX, scale, fatigue reduction).
-Phases 8-10 = **agent supervisor** (the "mesh" vision, unique positioning).
+Phases 1-4 = **human approval complete** (shipped, tested, works with Claude Code).
+Phases 5-8 = **human approval polished** (UX, scale, fatigue reduction).
+Phases 9-11 = **agent supervisor** (the "mesh" vision, unique positioning).

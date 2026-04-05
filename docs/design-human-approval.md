@@ -1,6 +1,6 @@
 # Design: Human Approval
 
-**Status**: Draft
+**Status**: Implemented (v0.3.2)
 **Author**: Marc Verchiani
 **Date**: 2026-04-05
 
@@ -21,37 +21,52 @@ For agent-mesh to deliver on its "Envoy of AI agents" promise, the approval flow
 5. **Fail-closed** — timeout = deny
 6. **Auditable** — every approval/denial is traced with who, when, from where
 
-## Two Modes, One Store
+## Async-First, One Store
 
-The approval mechanism supports two execution modes. The mode is determined by the **transport**, not the policy — the same `human_approval` rule produces different behavior depending on how the agent connects.
+All approval flows are **non-blocking**. The handler returns immediately with a pending approval ID. Resolution happens out-of-band via virtual MCP tools or HTTP API.
 
-| Mode | Transport | Agent type | Behavior |
-|------|-----------|------------|----------|
-| **Sync** | MCP stdio | Interactive (Claude Code, Cursor) | Connection held, agent waits, gets result when approved |
-| **Async** | HTTP | Autonomous (pipelines, background agents) | 202 immediate, agent continues, polls or receives callback |
+| Transport | Agent type | Behavior |
+|-----------|------------|----------|
+| **MCP stdio** | Interactive (Claude Code, Cursor) | Immediate response with approval ID, agent resolves via `approval.resolve` tool |
+| **MCP stdio** | Interactive, TTY available | TTY prompt via `/dev/tty`, inline approve/deny (no store needed) |
+| **HTTP** | Autonomous (pipelines, background agents) | 202 immediate, agent polls or receives callback |
 
 The approval store is shared. Only the handler integration differs.
 
-### Sync Mode — Interactive agents
+### MCP Mode — Interactive agents (v0.3.2)
 
 ```
-Agent (Claude Code / Cursor)               agent-mesh                        Human
+Agent (Claude Code)                    agent-mesh                        Human
          |                                      |                               |
          |-- tools/call ----------------------->|                               |
          |                                      |-- policy: human_approval      |
          |                                      |-- create PendingApproval      |
-         |                                      |-- notify -------------------->|
+         |<-- "Approval required (id: abc)" ----|                               |
          |                                      |                               |
-         |          (connection held, agent waits)                              |
+         |-- (shows message to user)            |                               |
          |                                      |                               |
-         |                                      |<-- mesh approve <id> ---------|
+         |-- approval.resolve(abc, approve) --->|                               |
          |                                      |-- forward to upstream         |
-         |<-- result ---------------------------|                               |
+         |<-- result (tool output) -------------|                               |
 ```
 
-The agent never knows approval happened. It submitted a tool call and got a result — just slower than usual. This is the sidecar contract.
+The agent receives a text response with the approval ID and instructions. An LLM-based agent (Claude Code) understands the message and calls `approval.resolve` to approve/deny — optionally after asking the human. The tool execution happens inside `approval.resolve`, which replays the original call and returns the upstream result.
 
-### Async Mode — Autonomous agents
+Key insight: MCP is request/response, but **the response doesn't have to block**. Returning a pending message and letting the agent self-resolve via a virtual tool keeps the connection alive and the agent responsive.
+
+### TTY Mode — Inline prompt (fallback for interactive terminals)
+
+When agent-mesh detects a real terminal (not piped stdin), it prompts via `/dev/tty` before falling back to the store:
+
+```
+>> APPROVAL REQUIRED
+   agent: claude  tool: filesystem.write_file
+   [a]pprove / [d]eny ? a
+```
+
+This is skipped in MCP stdio mode (Claude Code) because `/dev/tty` would open in the agent-mesh process terminal, not the caller's terminal.
+
+### HTTP Mode — Autonomous agents
 
 ```
 Autonomous agent                       agent-mesh                        Human
@@ -60,42 +75,27 @@ Autonomous agent                       agent-mesh                        Human
       |<-- 202 {id: "abc", status: pending} -|-- notify -------------------->|
       |                                      |                               |
       |-- (continues other work)             |                               |
-      |-- POST /tool/read_file ------------->|                               |
-      |<-- 200 {result: ...} ---------------|                               |
       |                                      |                               |
       |                                      |<-- mesh approve abc ----------|
       |                                      |-- forward write_file          |
       |                                      |-- store result                |
-      |                                      |-- POST callback (if set) ---->|  (to agent)
       |                                      |                               |
       |-- GET /approvals/abc/result -------->|                               |
       |<-- 200 {status: approved, result} ---|                               |
 ```
 
-The agent is not blocked. It receives a `202 Accepted` with a pending approval ID, continues working on tasks that don't depend on the blocked action, and retrieves the result when ready.
-
-### Why the transport dictates the mode
-
-- **MCP stdio** is inherently synchronous: one JSON-RPC request, one response. The agent cannot proceed until it gets a response. Holding the response is the only option — and it works, because the human is sitting at the terminal.
-- **HTTP** is inherently async-capable: the agent can fire requests, handle 202s, and poll. Blocking an HTTP connection for 5 minutes is fragile (timeouts, proxies, dropped connections). Returning 202 and letting the agent decide is more robust.
-
-An HTTP client can opt into sync behavior by long-polling `GET /approvals/{id}/result?wait=true`, which blocks until resolution. This gives HTTP agents the choice.
-
 ### The agent that replans
 
-A well-designed autonomous agent adapts when it hits an approval gate:
+A well-designed agent adapts when it hits an approval gate:
 
 ```
 Agent: "I need to write config.yaml then run tests"
-  1. write_file config.yaml → 202 pending (approval required)
-  2. Agent recognizes pending, replans: "I'll prepare tests while waiting"
-  3. read_file test_suite.go → 200 OK
-  4. Analyze test code, prepare test plan
-  5. Poll: GET /approvals/abc/result → approved, result attached
-  6. Run tests with the written config
+  1. write_file config.yaml → "Approval required (id: abc)"
+  2. Agent asks user for confirmation, calls approval.resolve(abc, approve)
+  3. Result comes back, agent continues with tests
 ```
 
-This is the agent's responsibility, not the sidecar's. Agent-mesh exposes the constraint (`202 pending`), the agent decides how to handle it. The sidecar doesn't prescribe agent behavior — it governs tool access.
+This is the agent's responsibility, not the sidecar's. Agent-mesh exposes the constraint, the agent decides how to handle it. The sidecar doesn't prescribe agent behavior — it governs tool access.
 
 ## Core Concept: Approval Store
 
@@ -152,132 +152,57 @@ func (s *Store) Result(id string) (*ResolvedEntry, error)  // retrieve result af
 
 ## Integration Points
 
-### MCP Server (stdio) — Sync Mode
+### MCP Server (stdio) — Non-blocking (v0.3.2)
 
 ```go
 // mcp/server.go — handleToolsCall
 
 if decision.Action == "human_approval" {
-    pending := s.Approvals.Submit(s.AgentID, toolName, arguments, traceID)
-    slog.Warn("APPROVAL REQUIRED",
-        "id", pending.ID, "tool", toolName, "timeout", pending.Timeout)
-
-    // Block until resolved — sync mode, MCP is request/response
-    resolution := <-pending.Result
-
-    if resolution.Status != StatusApproved {
-        return mcpText("Action %s: %s", resolution.Status, toolName), nil
+    // Try TTY prompt first (interactive terminal)
+    approved, resolvedBy := s.promptTTY(toolName, arguments)
+    if approved != nil {
+        // Resolved inline via /dev/tty — no store needed
+        // ...
     }
 
-    // Approved — forward to upstream
-    result, statusCode, err := s.Handler.Forward(tool, arguments)
-    // ... trace + return result
+    // No TTY — return immediately with pending approval ID
+    pending := s.Approvals.Submit(s.AgentID, toolName, decision.Rule, arguments)
+    remaining := pending.Remaining(s.Approvals.Timeout())
+    return mcpText("Approval required (id: %s). Tool: %s. Timeout: %ds.\n"+
+        "Use approval.resolve with id=%s and decision=approve or deny.",
+        shortID, toolName, int(remaining.Seconds()), shortID), nil
 }
 ```
 
-The MCP JSON-RPC response is held open. The agent (Claude Code) simply waits. From Claude Code's perspective, the tool call is taking a while — no special handling needed.
+The agent receives a text response immediately. An LLM agent (Claude Code) understands the message and calls `approval.resolve` to complete the flow. The `approval.resolve` virtual tool replays the original tool call on approve.
 
-### HTTP Proxy — Async Mode
+### Virtual MCP Tools
 
-The HTTP handler returns `202 Accepted` immediately. The approval store holds the pending entry. When a human approves, agent-mesh forwards to upstream and stores the result. The agent retrieves it later.
+Two virtual tools are registered alongside the proxied tools (no policy evaluation):
 
-```go
-// proxy/handler.go — handleToolCall
+| Tool | Description |
+|------|-------------|
+| `approval.resolve` | Approve or deny a pending request. On approve, replays the original tool call and returns the result. |
+| `approval.pending` | List all pending approval requests with IDs, tools, and age. |
 
-if decision.Action == "human_approval" {
-    pending := h.Approvals.Submit(agentID, toolName, req.Params, entry.TraceID)
+These are handled before registry lookup and policy evaluation — they're internal to agent-mesh.
 
-    // Extract optional callback URL
-    callbackURL := r.Header.Get("X-Callback-URL")
-    if callbackURL != "" {
-        h.Approvals.SetCallback(pending.ID, callbackURL)
-    }
+### Built-in Tools (v0.3.3)
 
-    // Async mode — return 202 immediately
-    writeJSON(w, 202, ToolCallResponse{
-        TraceID:    entry.TraceID,
-        ApprovalID: pending.ID,
-        Policy:     "human_approval",
-        Error:      "action requires human approval",
-    })
-    return
-}
-```
+Two built-in tools provide capabilities not available from upstream MCP servers. Unlike virtual tools, these **go through the policy engine** like any proxied tool:
 
-When the approval resolves, the store triggers the forwarding:
+| Tool | Description | Parameters |
+|------|-------------|------------|
+| `filesystem.delete_file` | Delete a file from the filesystem | `path` (string, required) |
+| `http.fetch` | Make an HTTP request and return the response | `url` (string, required), `method` (GET/POST/PUT/DELETE, default GET), `body` (string, optional) |
 
-```go
-// approval/store.go — on Approve()
+`http.fetch` returns `{status, headers, body}` with a 1MB response limit and 30s timeout. This fills the "sidecar proxy that doesn't proxy network" gap — agents can now reach external APIs, subject to policy.
 
-func (s *Store) Approve(id string, by string) error {
-    // ... resolve the pending entry ...
+### HTTP Proxy — Async Mode (planned)
 
-    // Forward to upstream (async — runs in goroutine)
-    go func() {
-        result, statusCode, err := s.handler.Forward(pending.Tool, pending.Params)
-        s.storeResult(id, result, statusCode, err)
+The HTTP handler will return `202 Accepted` immediately with a pending approval ID. The agent polls `GET /approvals/{id}/result` for the result, or sets `X-Callback-URL` for push notification.
 
-        // Callback if configured
-        if pending.CallbackURL != "" {
-            s.postCallback(pending.CallbackURL, id, result)
-        }
-    }()
-
-    // Also unblock any sync waiters (MCP mode)
-    pending.Result <- Resolution{Status: StatusApproved, ResolvedBy: by, ResolvedAt: time.Now()}
-    return nil
-}
-```
-
-### Result Retrieval — Async Agents
-
-Async agents retrieve results through a new endpoint:
-
-```
-GET /approvals/{id}/result
-
-# Pending — not yet resolved
-404 {"status": "pending", "remaining": "3m22s"}
-
-# Resolved — result available
-200 {
-  "status": "approved",
-  "approved_by": "cli:marc",
-  "result": { ... },          // upstream response
-  "latency_ms": 142,
-  "approval_ms": 34200
-}
-
-# Denied or timed out
-200 {"status": "denied", "resolved_by": "cli:marc"}
-200 {"status": "timeout", "resolved_by": "system"}
-```
-
-Optional long-poll for agents that prefer to wait:
-
-```
-GET /approvals/{id}/result?wait=true&timeout=60s
-
-# Blocks until resolved or client timeout, whichever comes first
-```
-
-### Callback — Push notification to agent
-
-If the agent sets `X-Callback-URL` on the original request, agent-mesh POSTs the result to that URL when the approval resolves:
-
-```
-POST {callback_url}
-Content-Type: application/json
-
-{
-  "approval_id": "abc123",
-  "status": "approved",
-  "tool": "filesystem.write_file",
-  "result": { ... }
-}
-```
-
-This is optional. Agents that don't set the header use polling. Agents that do get push notification — zero change to the approval store, just an extra HTTP call on resolution.
+This is not yet implemented (Phase 3 in roadmap).
 
 ## Approval Channels
 
@@ -285,37 +210,45 @@ The resolution signal (`Approve`/`Deny`) can come from multiple sources. Agent-m
 
 | # | Channel | Context | Friction | How it works |
 |---|---------|---------|----------|-------------|
-| **1** | **TTY prompt** | MCP mode, interactive terminal (Claude Code, Cursor) | Lowest — type `a` + enter | Prompt via `/dev/tty`, bypasses stdin/stdout used by JSON-RPC |
-| **2** | **CLI (`mesh`)** | Second terminal, `mesh watch` or `mesh approve <id>` | Low — one command | Polls HTTP API, interactive or one-shot |
-| **3** | **HTTP API** | Autonomous agents, scripts, webhooks, CI | None (programmatic) | `POST /approvals/{id}/approve` |
+| **1** | **TTY prompt** | Interactive terminal (not piped) | Lowest — type `a` + enter | Prompt via `/dev/tty`, bypasses stdin/stdout |
+| **2** | **`approval.resolve` MCP tool** | MCP mode (Claude Code, Cursor) | Low — agent self-resolves | Agent calls virtual tool after showing user the pending message |
+| **3** | **CLI (`mesh`)** | Second terminal | Low — one command | `mesh approve <id>` calls HTTP API |
+| **4** | **HTTP API** | Autonomous agents, scripts, webhooks | None (programmatic) | `POST /approvals/{id}/approve` |
 
 The cascade:
-1. **TTY available?** → prompt inline, resolve immediately, no approval store needed
-2. **No TTY, approval store configured?** → block handler, wait for resolution via HTTP API
-3. **No TTY, no store?** → return static "approval required" message (fallback)
+1. **TTY available (not piped)?** → prompt inline via `/dev/tty`, resolve immediately, no store needed
+2. **Piped stdin, store configured?** → return pending message immediately, agent resolves via `approval.resolve` tool, HTTP API, or CLI
+3. **No store?** → return static "approval required" error (fallback)
 
-### 1. TTY Prompt (MCP mode, interactive)
+### 1. TTY Prompt (interactive terminal, non-piped)
 
-When agent-mesh runs as an MCP server in a terminal (e.g., Claude Code), it prompts the user directly via `/dev/tty` — the same technique `sudo` uses to read passwords when stdin is piped.
+When agent-mesh runs with a real terminal (not piped stdin), it prompts via `/dev/tty`:
+
+```
+>> APPROVAL REQUIRED
+   agent: claude  tool: filesystem.write_file
+   path: /home/user/project/main.go
+   [a]pprove / [d]eny ? a
+   Approved
+→ tool call completes immediately
+```
+
+**Skipped in MCP stdio mode** (Claude Code) because `/dev/tty` would open in the agent-mesh process terminal, not the caller's terminal — causing an invisible deadlock (fixed in v0.3.1).
+
+### 2. `approval.resolve` Virtual Tool (MCP mode, primary path)
+
+When TTY is not available (piped stdin), the handler returns immediately with a pending message. The agent calls `approval.resolve` to complete the flow:
 
 ```
 Claude calls filesystem.write_file →
+← "Approval required (id: a1b2c3d4). Use approval.resolve with id=a1b2c3d4 and decision=approve or deny."
 
-  >> APPROVAL REQUIRED
-     agent: claude
-     tool:  filesystem.write_file
-     path: /home/user/project/main.go
-     content: package main...
-
-     [a]pprove / [d]eny ? a
-     Approved
-
-→ tool call completes, Claude gets the result
+Claude shows the message to the user, then calls:
+  approval.resolve(id: "a1b2c3d4", decision: "approve")
+← upstream result (file written)
 ```
 
-The user types `a` + enter. The MCP response is held until the prompt resolves — Claude Code sees a slow tool call, nothing else. No second terminal, no HTTP call, no context switching.
-
-Falls back to approval store when `/dev/tty` is not available (CI, Docker, piped I/O).
+This is the **primary path for Claude Code** since v0.3.2. No freeze, no second terminal, the agent stays responsive throughout.
 
 ### 2. HTTP API (always available)
 
@@ -483,37 +416,26 @@ curl localhost:9090/traces?policy=human_approval | jq '[.[].approval_ms] | add /
 curl localhost:9090/traces?policy=human_approval | jq 'group_by(.approved_by) | map({by: .[0].approved_by, count: length})'
 ```
 
-## Implementation Phases
+## Implementation Status
 
-### Phase 1 — Approval store + sync mode + HTTP API
+### Done (v0.3.0–v0.3.2)
 
-- `approval/store.go` — PendingApproval, channel-based blocking, timeout goroutine
-- HTTP endpoints: `GET /approvals`, `POST /approvals/{id}/approve`, `POST /approvals/{id}/deny`
-- Wire sync mode into `mcp/server.go` (block on channel)
-- Wire async mode into `proxy/handler.go` (return 202)
-- Trace enrichment with approval fields
-- stderr logging for pending approvals (minimal notification)
+- `approval/store.go` — PendingApproval, channel-based blocking, timeout goroutine, prefix match
+- HTTP endpoints: `GET /approvals`, `GET /approvals/{id}`, `POST /approvals/{id}/approve`, `POST /approvals/{id}/deny`
+- MCP virtual tools: `approval.resolve` (approve/deny + replay), `approval.pending` (list)
+- TTY prompt via `/dev/tty` with auto-skip in piped mode (v0.3.1)
+- Non-blocking MCP handler: return pending message immediately (v0.3.2)
+- `approval.resolve` replays original tool call on approve, returns upstream result
+- `mesh` CLI: `pending`, `show`, `approve`, `deny`, `watch` subcommands
+- Trace enrichment: approval_id, status, approved_by, approval_ms
+- HTTP server runs in background alongside MCP mode
 
-### Phase 2 — Async result flow + CLI
+### Next
 
-- `GET /approvals/{id}/result` endpoint (poll + long-poll)
-- `X-Callback-URL` support — POST result to agent on resolution
-- Forward-on-approve: upstream call happens when human approves, result stored
-- `mesh pending` / `mesh approve` / `mesh deny` / `mesh show`
-- Thin HTTP client calling the Phase 1 API
-- Colored terminal output, human-readable
-
-### Phase 3 — Temporal grants
-
-- `approval/grant.go` — grant store with TTL
-- Policy engine integration (check grants before rules)
-- `mesh grant` / `mesh grants` / `mesh revoke`
-
-### Phase 4 — TUI + Webhooks
-
-- `mesh watch` — live terminal UI (bubbletea or similar)
+- Async HTTP proxy mode (202 + poll + `GET /approvals/{id}/result`)
+- `X-Callback-URL` support
+- Temporal grants (`mesh grant` — sudo for agents)
 - Webhook notification on pending approval
-- Slack/Discord integration templates
 
 ## Risks & Mitigations
 
@@ -530,12 +452,13 @@ curl localhost:9090/traces?policy=human_approval | jq 'group_by(.approved_by) | 
 
 Agent-mesh exposes constraints, it does not dictate how agents handle them.
 
-- **Sync agents** (Claude Code via MCP) experience a slow tool call. They don't know approval exists.
+- **LLM agents** (Claude Code via MCP) receive "Approval required" and understand the message. They can ask the user for confirmation, then call `approval.resolve`. The approval is visible, not hidden.
 - **Async agents** (HTTP pipelines) receive `202 pending`. They choose to wait, replan, or do other work.
-- **Smart agents** replan around the constraint: start independent tasks while waiting for approval.
-- **Simple agents** poll in a loop until resolved.
+- **Simple agents** poll `approval.pending` in a loop until resolved.
 
 All of these are valid. The sidecar governs _access_, the agent decides _workflow_. This separation is what makes agent-mesh framework-agnostic — it works with any agent, regardless of how sophisticated its planning is.
+
+**Design shift (v0.3.2)**: The original design assumed MCP mode should be sync/blocking ("the agent never knows approval happened"). In practice, blocking the MCP connection froze Claude Code for up to 5 minutes, making it unusable. The async approach is better: the agent sees the approval gate, participates in resolving it, and stays responsive. Transparency beats invisibility for LLM agents.
 
 ## Non-Goals
 
