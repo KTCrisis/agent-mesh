@@ -133,3 +133,31 @@ func TestEvaluateMCPNamespacedTools(t *testing.T) {
 		t.Errorf("action = %q, want deny (not listed)", d.Action)
 	}
 }
+
+func TestEvaluateToolGlobPattern(t *testing.T) {
+	e := NewEngine([]config.Policy{
+		{Name: "claude", Agent: "claude", Rules: []config.Rule{
+			{Tools: []string{"weather.*"}, Action: "allow"},
+			{Tools: []string{"gmail.gmail_read_*"}, Action: "allow"},
+			{Tools: []string{"gmail.*"}, Action: "deny"},
+		}},
+	})
+
+	// weather.* matches any weather tool
+	d := e.Evaluate("claude", "weather.weather_forecast", nil)
+	if d.Action != "allow" {
+		t.Errorf("weather glob: action = %q, want allow", d.Action)
+	}
+
+	// gmail.gmail_read_* matches read tools
+	d = e.Evaluate("claude", "gmail.gmail_read_email", nil)
+	if d.Action != "allow" {
+		t.Errorf("gmail read glob: action = %q, want allow", d.Action)
+	}
+
+	// gmail.* catches the rest as deny
+	d = e.Evaluate("claude", "gmail.gmail_send_email", nil)
+	if d.Action != "deny" {
+		t.Errorf("gmail catch-all: action = %q, want deny", d.Action)
+	}
+}

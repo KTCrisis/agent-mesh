@@ -70,10 +70,13 @@ func matchAgent(pattern, agentID string) bool {
 	return matched
 }
 
-// matchTool checks if toolName is in the allowed tools list.
+// matchTool checks if toolName is in the allowed tools list (supports glob patterns).
 func matchTool(tools []string, toolName string) bool {
 	for _, t := range tools {
 		if t == "*" || t == toolName {
+			return true
+		}
+		if matched, _ := filepath.Match(t, toolName); matched {
 			return true
 		}
 	}

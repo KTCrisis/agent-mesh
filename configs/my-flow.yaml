@@ -12,6 +12,11 @@ mcp_servers:
     command: npx
     args: ["-y", "@monsoft/mcp-gmail"]
 
+  - name: weather
+    transport: stdio
+    command: npx
+    args: ["-y", "open-meteo-mcp-server"]
+
   # Uncomment when GITHUB_TOKEN is set:
   # - name: github
   #   transport: stdio
@@ -50,6 +55,10 @@ policies:
             "filesystem.create_directory",
           ]
         action: human_approval
+
+      # ── Weather ──
+      - tools: ["weather.*"]
+        action: allow
 
       # Move/rename — denied (destructive, hard to undo)
       - tools: ["filesystem.move_file"]
