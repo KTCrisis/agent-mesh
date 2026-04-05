@@ -4,3 +4,4 @@ mesh
 .DS_Store
 CLAUDE.md
 traces.jsonl
+traces-*.jsonl
