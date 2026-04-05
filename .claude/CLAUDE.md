@@ -7,12 +7,11 @@ State: functional PoC, branchable as MCP server in Claude Code (filesystem + Gma
 Repo: private
 
 ### Next actions (prioritized)
-1. **SSE transport** for upstream MCP servers (currently stdio only)
-2. **JWT agent credentials** with scopes + budget
-3. **Rate limiting** per agent
-4. **First public demo** — README with architecture diagram, position vs Envoy analogy
-5. **PostgreSQL traces** — replace in-memory store for persistence
-6. **Temporal grants** — `mesh grant` for approval fatigue reduction
+1. **JWT agent credentials** with scopes + budget
+2. **Rate limiting** per agent
+3. **First public demo** — README with architecture diagram, position vs Envoy analogy
+4. **PostgreSQL traces** — replace in-memory store for persistence
+5. **Temporal grants** — `mesh grant` for approval fatigue reduction
 
 ---
 
