@@ -89,7 +89,7 @@ func TestManagerConcurrentAccess(t *testing.T) {
 			c := &MCPClient{Name: fmt.Sprintf("server-%d", n), Transport: "stdio"}
 			c.status = "ready"
 			c.tools = []MCPTool{{Name: "tool"}}
-			c.done = make(chan struct{})
+			c.done = newDoneChan()
 			m.Add(c)
 		}(i)
 	}
@@ -118,7 +118,7 @@ func TestManagerServerStatusError(t *testing.T) {
 	c.status = "error"
 	c.lastError = "connection refused"
 	c.tools = []MCPTool{}
-	c.done = make(chan struct{})
+	c.done = newDoneChan()
 	m.Add(c)
 
 	statuses := m.ServerStatuses()

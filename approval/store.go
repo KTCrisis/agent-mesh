@@ -203,11 +203,22 @@ func (s *Store) List() []*PendingApproval {
 
 // ListPending returns only pending approvals, most recent first.
 func (s *Store) ListPending() []*PendingApproval {
-	all := s.List()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
 	result := make([]*PendingApproval, 0)
-	for _, pa := range all {
+	for _, pa := range s.pending {
 		if pa.Status == StatusPending {
 			result = append(result, pa)
+		}
+	}
+
+	// Sort most recent first
+	for i := 0; i < len(result); i++ {
+		for j := i + 1; j < len(result); j++ {
+			if result[j].CreatedAt.After(result[i].CreatedAt) {
+				result[i], result[j] = result[j], result[i]
+			}
 		}
 	}
 	return result

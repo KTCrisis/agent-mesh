@@ -17,21 +17,23 @@ type sseTransport struct {
 	sseURL  string
 	headers map[string]string
 
-	postURL  string // discovered from SSE "endpoint" event
-	postMu   sync.RWMutex
-	postReady chan struct{} // closed when postURL is discovered
+	postURL    string // discovered from SSE "endpoint" event
+	postMu     sync.RWMutex
+	postReady  chan struct{} // closed when postURL is discovered
 
-	client *http.Client
-	resp   *http.Response // SSE connection response (kept open)
+	client     *http.Client // SSE stream (no timeout)
+	postClient *http.Client // POST requests (30s timeout)
+	resp       *http.Response // SSE connection response (kept open)
 }
 
 func newSSETransport(name, sseURL string, headers map[string]string) *sseTransport {
 	return &sseTransport{
-		name:      name,
-		sseURL:    sseURL,
-		headers:   headers,
-		postReady: make(chan struct{}),
-		client:    &http.Client{Timeout: 0}, // no timeout for SSE stream
+		name:       name,
+		sseURL:     sseURL,
+		headers:    headers,
+		postReady:  make(chan struct{}),
+		client:     &http.Client{Timeout: 0},              // no timeout for SSE stream
+		postClient: &http.Client{Timeout: 30 * time.Second}, // POST requests
 	}
 }
 
@@ -80,8 +82,7 @@ func (t *sseTransport) WriteRequest(data []byte) error {
 		req.Header.Set(k, v)
 	}
 
-	postClient := &http.Client{Timeout: 30 * time.Second}
-	resp, err := postClient.Do(req)
+	resp, err := t.postClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("SSE POST: %w", err)
 	}

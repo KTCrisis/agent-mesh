@@ -11,6 +11,24 @@ import (
 	"time"
 )
 
+// doneChan wraps a channel with sync.Once to prevent double-close panics.
+type doneChan struct {
+	ch   chan struct{}
+	once sync.Once
+}
+
+func newDoneChan() *doneChan {
+	return &doneChan{ch: make(chan struct{})}
+}
+
+func (d *doneChan) Close() {
+	d.once.Do(func() { close(d.ch) })
+}
+
+func (d *doneChan) Chan() <-chan struct{} {
+	return d.ch
+}
+
 // MCPClient manages a connection to a single upstream MCP server.
 type MCPClient struct {
 	Name      string
@@ -28,7 +46,7 @@ type MCPClient struct {
 	tools     []MCPTool
 	status    string // "connecting", "ready", "error", "closed"
 	lastError string
-	done      chan struct{} // closed when readLoop exits
+	done      *doneChan // closed when readLoop exits or client is closed
 }
 
 // NewStdioClient creates an MCP client that communicates via stdin/stdout of a subprocess.
@@ -41,7 +59,7 @@ func NewStdioClient(name, command string, args []string, env map[string]string) 
 		newTr:     factory,
 		pending:   make(map[int64]chan rpcResponse),
 		status:    "connecting",
-		done:      make(chan struct{}),
+		done:      newDoneChan(),
 	}
 }
 
@@ -55,7 +73,7 @@ func NewSSEClient(name, sseURL string, headers map[string]string) *MCPClient {
 		newTr:     factory,
 		pending:   make(map[int64]chan rpcResponse),
 		status:    "connecting",
-		done:      make(chan struct{}),
+		done:      newDoneChan(),
 	}
 }
 
@@ -149,15 +167,7 @@ func (c *MCPClient) CallTool(ctx context.Context, name string, arguments map[str
 func (c *MCPClient) Close() error {
 	c.setStatus("closed", "")
 	c.failAllPending("client closed")
-
-	// Signal done to unblock any send() calls
-	select {
-	case <-c.done:
-		// already closed
-	default:
-		close(c.done)
-	}
-
+	c.done.Close()
 	return c.tr.Close()
 }
 
@@ -190,7 +200,7 @@ func (c *MCPClient) send(ctx context.Context, method string, params map[string]a
 	select {
 	case resp := <-ch:
 		return resp, nil
-	case <-c.done:
+	case <-c.done.Chan():
 		return rpcResponse{}, fmt.Errorf("connection lost while waiting for %s", method)
 	case <-ctx.Done():
 		return rpcResponse{}, ctx.Err()
@@ -266,7 +276,7 @@ func (c *MCPClient) reconnectLoop() {
 		// Create fresh transport and try to connect
 		c.tr.Close()
 		c.tr = c.newTr()
-		c.done = make(chan struct{})
+		c.done = newDoneChan()
 
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		err := c.connectInternal(ctx)

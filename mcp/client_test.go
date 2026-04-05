@@ -69,7 +69,7 @@ func TestCloseIdempotent(t *testing.T) {
 func TestToolsReturnsCopy(t *testing.T) {
 	c := &MCPClient{
 		Name: "test",
-		done: make(chan struct{}),
+		done: newDoneChan(),
 	}
 	c.tools = []MCPTool{{Name: "a"}, {Name: "b"}}
 
@@ -85,7 +85,7 @@ func TestToolsReturnsCopy(t *testing.T) {
 func TestFailAllPending(t *testing.T) {
 	c := &MCPClient{
 		pending: make(map[int64]chan rpcResponse),
-		done:    make(chan struct{}),
+		done:    newDoneChan(),
 	}
 
 	ch1 := make(chan rpcResponse, 1)

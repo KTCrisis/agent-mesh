@@ -47,6 +47,11 @@ func New() *Limiter {
 	return l
 }
 
+// Close stops the background cleanup goroutine.
+func (l *Limiter) Close() {
+	l.cleanup.Stop()
+}
+
 // SetLimit registers a rate limit for a policy name.
 func (l *Limiter) SetLimit(policyName string, limit Limit) {
 	l.mu.Lock()
