@@ -82,9 +82,39 @@ Claude ──> agent-mesh ──> filesystem (read: allow, write: approval, dele
 
 The agent sees a normal tool surface. Agent Mesh enforces policy and records traces on every call.
 
-## Quick start
+## Install
 
-### 1. Build
+### Download binary (recommended)
+
+Grab the latest release for your platform:
+
+```bash
+# Linux (amd64)
+curl -L https://github.com/KTCrisis/agent-mesh/releases/latest/download/agent-mesh_0.3.4_linux_amd64.tar.gz | tar xz
+sudo mv agent-mesh /usr/local/bin/
+
+# Linux (arm64)
+curl -L https://github.com/KTCrisis/agent-mesh/releases/latest/download/agent-mesh_0.3.4_linux_arm64.tar.gz | tar xz
+sudo mv agent-mesh /usr/local/bin/
+
+# macOS (Apple Silicon)
+curl -L https://github.com/KTCrisis/agent-mesh/releases/latest/download/agent-mesh_0.3.4_darwin_arm64.tar.gz | tar xz
+sudo mv agent-mesh /usr/local/bin/
+
+# macOS (Intel)
+curl -L https://github.com/KTCrisis/agent-mesh/releases/latest/download/agent-mesh_0.3.4_darwin_amd64.tar.gz | tar xz
+sudo mv agent-mesh /usr/local/bin/
+
+# Windows (PowerShell)
+Invoke-WebRequest -Uri https://github.com/KTCrisis/agent-mesh/releases/latest/download/agent-mesh_0.3.4_windows_amd64.zip -OutFile agent-mesh.zip
+Expand-Archive agent-mesh.zip -DestinationPath .
+```
+
+All releases: [github.com/KTCrisis/agent-mesh/releases](https://github.com/KTCrisis/agent-mesh/releases)
+
+### Build from source
+
+Requires Go 1.22+:
 
 ```bash
 git clone https://github.com/KTCrisis/agent-mesh.git
@@ -92,7 +122,9 @@ cd agent-mesh
 go build -o agent-mesh .
 ```
 
-### 2. Configure
+## Quick start
+
+### 1. Write a config
 
 ```yaml
 # policies.yaml
@@ -120,15 +152,15 @@ policies:
         action: deny
 ```
 
-### 3. Plug into Claude Code
+### 2. Plug into Claude Code
 
 ```bash
-claude mcp add agent-mesh -- ./agent-mesh --mcp --config policies.yaml
+claude mcp add agent-mesh -- agent-mesh --mcp --config policies.yaml
 ```
 
-### 4. Use normally
+### 3. Use normally
 
-Claude sees the tools. Agent Mesh enforces the rules. Every call is traced.
+Restart Claude Code. The agent sees the tools. Agent Mesh enforces the rules. Every call is traced.
 
 ## Features
 
