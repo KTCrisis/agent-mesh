@@ -13,6 +13,7 @@ import (
 
 	"github.com/KTCrisis/agent-mesh/approval"
 	"github.com/KTCrisis/agent-mesh/config"
+	"github.com/KTCrisis/agent-mesh/grant"
 	"github.com/KTCrisis/agent-mesh/mcp"
 	"github.com/KTCrisis/agent-mesh/policy"
 	"github.com/KTCrisis/agent-mesh/proxy"
@@ -117,10 +118,15 @@ func main() {
 		}
 	}
 
-	// 7. Build handler
+	// 7. Build grant store
+	grants := grant.NewStore()
+	slog.Info("grant store ready")
+
+	// 8. Build handler
 	handler := proxy.NewHandler(reg, pol, traces)
 	handler.Approvals = approvals
 	handler.RateLimiter = limiter
+	handler.Grants = grants
 
 	// 7. Connect upstream MCP servers
 	var mcpManager *mcp.Manager

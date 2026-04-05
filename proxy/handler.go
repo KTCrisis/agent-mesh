@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/KTCrisis/agent-mesh/approval"
+	"github.com/KTCrisis/agent-mesh/grant"
 	"github.com/KTCrisis/agent-mesh/policy"
 	"github.com/KTCrisis/agent-mesh/ratelimit"
 	"github.com/KTCrisis/agent-mesh/registry"
@@ -47,6 +48,7 @@ type Handler struct {
 	Traces       *trace.Store
 	Approvals    *approval.Store
 	RateLimiter  *ratelimit.Limiter
+	Grants       *grant.Store
 	Client       *http.Client
 	MCPForwarder MCPForwarder
 }
@@ -79,6 +81,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleApproveAction(w, r)
 	case r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/deny") && strings.HasPrefix(r.URL.Path, "/approvals/"):
 		h.handleDenyAction(w, r)
+	case r.Method == "GET" && r.URL.Path == "/grants":
+		h.handleListGrants(w, r)
+	case r.Method == "POST" && r.URL.Path == "/grants":
+		h.handleCreateGrant(w, r)
+	case r.Method == "DELETE" && strings.HasPrefix(r.URL.Path, "/grants/"):
+		h.handleRevokeGrant(w, r)
 	case r.Method == "GET" && r.URL.Path == "/health":
 		h.handleHealth(w, r)
 	default:
@@ -153,6 +161,18 @@ func (h *Handler) handleToolCall(w http.ResponseWriter, r *http.Request) {
 			Error:   decision.Reason,
 		})
 		return
+	}
+
+	// 5. Check temporal grants (bypass approval if granted)
+	if decision.Action == "human_approval" && h.Grants != nil {
+		if g := h.Grants.Check(agentID, toolName); g != nil {
+			slog.Info("grant override",
+				"agent", agentID, "tool", toolName,
+				"grant", g.ID, "remaining", g.Remaining().Truncate(time.Second))
+			decision.Action = "allow"
+			decision.Rule = "grant:" + g.ID
+			decision.Reason = fmt.Sprintf("temporal grant %s (expires %s)", g.ID, g.ExpiresAt.Format(time.RFC3339))
+		}
 	}
 
 	if decision.Action == "human_approval" {
@@ -525,6 +545,86 @@ func (h *Handler) handleResolveAction(w http.ResponseWriter, r *http.Request, st
 	}
 
 	writeJSON(w, 200, map[string]string{"status": string(status), "id": id})
+}
+
+// --- Grant endpoints ---
+
+type grantRequest struct {
+	Agent    string `json:"agent"`
+	Tools    string `json:"tools"`
+	Duration string `json:"duration"` // e.g. "30m", "2h"
+}
+
+type grantView struct {
+	ID        string `json:"id"`
+	Agent     string `json:"agent"`
+	Tools     string `json:"tools"`
+	ExpiresAt string `json:"expires_at"`
+	Remaining string `json:"remaining"`
+	GrantedBy string `json:"granted_by"`
+}
+
+func (h *Handler) handleListGrants(w http.ResponseWriter, _ *http.Request) {
+	if h.Grants == nil {
+		writeJSON(w, 200, []any{})
+		return
+	}
+	grants := h.Grants.List()
+	views := make([]grantView, len(grants))
+	for i, g := range grants {
+		views[i] = grantView{
+			ID:        g.ID,
+			Agent:     g.Agent,
+			Tools:     g.Tools,
+			ExpiresAt: g.ExpiresAt.Format(time.RFC3339),
+			Remaining: g.Remaining().Truncate(time.Second).String(),
+			GrantedBy: g.GrantedBy,
+		}
+	}
+	writeJSON(w, 200, views)
+}
+
+func (h *Handler) handleCreateGrant(w http.ResponseWriter, r *http.Request) {
+	if h.Grants == nil {
+		writeJSON(w, 500, map[string]string{"error": "grant store not configured"})
+		return
+	}
+	var req grantRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, 400, map[string]string{"error": "invalid JSON body"})
+		return
+	}
+	if req.Agent == "" || req.Tools == "" || req.Duration == "" {
+		writeJSON(w, 400, map[string]string{"error": "agent, tools, and duration are required"})
+		return
+	}
+	dur, err := time.ParseDuration(req.Duration)
+	if err != nil {
+		writeJSON(w, 400, map[string]string{"error": "invalid duration: " + err.Error()})
+		return
+	}
+	g := h.Grants.Add(req.Agent, req.Tools, "http:"+r.RemoteAddr, dur)
+	writeJSON(w, 201, grantView{
+		ID:        g.ID,
+		Agent:     g.Agent,
+		Tools:     g.Tools,
+		ExpiresAt: g.ExpiresAt.Format(time.RFC3339),
+		Remaining: g.Remaining().Truncate(time.Second).String(),
+		GrantedBy: g.GrantedBy,
+	})
+}
+
+func (h *Handler) handleRevokeGrant(w http.ResponseWriter, r *http.Request) {
+	if h.Grants == nil {
+		writeJSON(w, 404, map[string]string{"error": "grant store not configured"})
+		return
+	}
+	id := strings.TrimPrefix(r.URL.Path, "/grants/")
+	if !h.Grants.Revoke(id) {
+		writeJSON(w, 404, map[string]string{"error": "grant not found"})
+		return
+	}
+	writeJSON(w, 200, map[string]string{"status": "revoked", "id": id})
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

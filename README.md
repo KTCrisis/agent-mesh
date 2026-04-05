@@ -91,23 +91,23 @@ Grab the latest release for your platform:
 
 ```bash
 # Linux (amd64)
-curl -L https://github.com/KTCrisis/agent-mesh/releases/latest/download/agent-mesh_0.3.5_linux_amd64.tar.gz | tar xz
+curl -L https://github.com/KTCrisis/agent-mesh/releases/latest/download/agent-mesh_0.4.0_linux_amd64.tar.gz | tar xz
 sudo mv agent-mesh /usr/local/bin/
 
 # Linux (arm64)
-curl -L https://github.com/KTCrisis/agent-mesh/releases/latest/download/agent-mesh_0.3.5_linux_arm64.tar.gz | tar xz
+curl -L https://github.com/KTCrisis/agent-mesh/releases/latest/download/agent-mesh_0.4.0_linux_arm64.tar.gz | tar xz
 sudo mv agent-mesh /usr/local/bin/
 
 # macOS (Apple Silicon)
-curl -L https://github.com/KTCrisis/agent-mesh/releases/latest/download/agent-mesh_0.3.5_darwin_arm64.tar.gz | tar xz
+curl -L https://github.com/KTCrisis/agent-mesh/releases/latest/download/agent-mesh_0.4.0_darwin_arm64.tar.gz | tar xz
 sudo mv agent-mesh /usr/local/bin/
 
 # macOS (Intel)
-curl -L https://github.com/KTCrisis/agent-mesh/releases/latest/download/agent-mesh_0.3.5_darwin_amd64.tar.gz | tar xz
+curl -L https://github.com/KTCrisis/agent-mesh/releases/latest/download/agent-mesh_0.4.0_darwin_amd64.tar.gz | tar xz
 sudo mv agent-mesh /usr/local/bin/
 
 # Windows (PowerShell)
-Invoke-WebRequest -Uri https://github.com/KTCrisis/agent-mesh/releases/latest/download/agent-mesh_0.3.5_windows_amd64.zip -OutFile agent-mesh.zip
+Invoke-WebRequest -Uri https://github.com/KTCrisis/agent-mesh/releases/latest/download/agent-mesh_0.4.0_windows_amd64.zip -OutFile agent-mesh.zip
 Expand-Archive agent-mesh.zip -DestinationPath .
 ```
 
@@ -239,7 +239,7 @@ Claude calls filesystem.write_file
 
 No freeze, no second terminal needed. The agent stays responsive.
 
-Two virtual MCP tools handle governance:
+Virtual MCP tools handle governance:
 
 | Tool | Description |
 |------|-------------|
@@ -251,6 +251,42 @@ Approvals can also be resolved via:
 - **HTTP API:** `POST /approvals/{id}/approve`
 
 Configurable timeout (default 5 min). Timeout = deny.
+
+### Temporal grants
+
+When you're approving the same tool repeatedly, create a temporary override — like `sudo` for agents:
+
+```
+You: "Grant filesystem.write_* for 30 minutes"
+Claude: grant.create {tools: "filesystem.write_*", duration: "30m"}
+  → Grant a1b2c3d4 created, expires in 30m
+  → All filesystem.write_* calls now bypass approval
+  → Traced as "grant:a1b2c3d4" (full audit trail)
+```
+
+Three virtual MCP tools:
+
+| Tool | Description |
+|------|-------------|
+| `grant.create` | Create a temporal grant (tools pattern + duration) |
+| `grant.list` | List all active grants |
+| `grant.revoke` | Revoke a grant by ID |
+
+Also available via HTTP API:
+
+```bash
+# Create a grant
+curl -X POST http://localhost:9090/grants \
+  -d '{"agent":"claude","tools":"filesystem.write_*","duration":"30m"}'
+
+# List active grants
+curl http://localhost:9090/grants
+
+# Revoke
+curl -X DELETE http://localhost:9090/grants/a1b2c3d4
+```
+
+Grants expire automatically. No config change needed. Every call that uses a grant is traced with the grant ID.
 
 ### Tracing
 
@@ -398,6 +434,9 @@ Result: Claude searches flights, checks weather, estimates budgets — all trace
 | `GET` | `/approvals` | List pending approvals |
 | `POST` | `/approvals/{id}/approve` | Approve a pending request |
 | `POST` | `/approvals/{id}/deny` | Deny a pending request |
+| `GET` | `/grants` | List active temporal grants |
+| `POST` | `/grants` | Create a temporal grant |
+| `DELETE` | `/grants/{id}` | Revoke a grant |
 | `GET` | `/health` | Health check and stats |
 
 ## CLI flags
@@ -429,6 +468,8 @@ agent-mesh/
 │   └── mcp.go             # Import MCP → tool catalog
 ├── policy/
 │   └── engine.go          # Rule evaluation engine (glob patterns, conditions)
+├── grant/
+│   └── store.go           # Temporal grants (sudo for agents, TTL-based)
 ├── ratelimit/
 │   └── limiter.go         # Per-agent rate limiting + loop detection
 ├── proxy/
@@ -461,7 +502,7 @@ go test ./... -race        # With race detector
 go test ./proxy/ -v        # One package
 ```
 
-120 tests across 9 packages:
+128 tests across 10 packages:
 
 | Package | Tests | Covers |
 |---------|-------|--------|
@@ -469,6 +510,7 @@ go test ./proxy/ -v        # One package
 | `registry` | 10 | CRUD, loading, namespacing, concurrent access |
 | `policy` | 9 | Allow/deny, conditions, wildcards, globs, fail-closed |
 | `proxy` | 17 | REST and MCP calls, deny/approval flows, URL encoding |
+| `grant` | 8 | Create, check, revoke, expiration, cleanup, glob matching |
 | `ratelimit` | 8 | Per-minute, total budget, loop detection, agent isolation |
 | `trace` | 11 | Record, filter, eviction, stats, JSONL persistence |
 | `mcp` | 16 | Client lifecycle, timeouts, SSE transport, approval flow |
@@ -485,7 +527,7 @@ go test ./proxy/ -v        # One package
 - [x] Tool discovery + policy generation
 - [ ] JWT agent credentials (scopes + budget)
 - [x] Rate limiting per agent (sliding window + total budget + loop detection)
-- [ ] Temporal grants (`mesh grant` — sudo for agents)
+- [x] Temporal grants (sudo for agents — `grant.create` MCP tool + HTTP API)
 - [x] Async approval (202 + poll via MCP virtual tools, HTTP API)
 - [ ] Supervisor agent protocol
 - [ ] OpenTelemetry trace export

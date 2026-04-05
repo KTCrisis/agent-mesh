@@ -192,6 +192,37 @@ func (s *Server) handleToolsList() map[string]any {
 		},
 	})
 
+	// Append virtual grant tools
+	mcpTools = append(mcpTools, MCPTool{
+		Name:        "grant.create",
+		Description: "Create a temporal grant — temporarily allow a tool pattern without approval. Like sudo for agents.",
+		InputSchema: MCPSchema{
+			Type: "object",
+			Properties: map[string]MCPProp{
+				"tools":    {Type: "string", Description: "Tool glob pattern (e.g. filesystem.write_*, gmail.*)"},
+				"duration": {Type: "string", Description: "Duration (e.g. 30m, 2h, 1h30m)"},
+			},
+			Required: []string{"tools", "duration"},
+		},
+	}, MCPTool{
+		Name:        "grant.list",
+		Description: "List all active temporal grants",
+		InputSchema: MCPSchema{
+			Type:       "object",
+			Properties: map[string]MCPProp{},
+		},
+	}, MCPTool{
+		Name:        "grant.revoke",
+		Description: "Revoke an active temporal grant",
+		InputSchema: MCPSchema{
+			Type: "object",
+			Properties: map[string]MCPProp{
+				"id": {Type: "string", Description: "Grant ID (full or prefix)"},
+			},
+			Required: []string{"id"},
+		},
+	})
+
 	return map[string]any{"tools": mcpTools}
 }
 
@@ -209,6 +240,12 @@ func (s *Server) handleToolsCall(params map[string]any) (any, *rpcError) {
 		return s.handleApprovalResolve(arguments)
 	case "approval.pending":
 		return s.handleApprovalPending()
+	case "grant.create":
+		return s.handleGrantCreate(arguments)
+	case "grant.list":
+		return s.handleGrantList()
+	case "grant.revoke":
+		return s.handleGrantRevoke(arguments)
 	}
 
 	// Look up tool
@@ -484,6 +521,78 @@ func (s *Server) handleApprovalPending() (any, *rpcError) {
 	return map[string]any{
 		"content": []map[string]any{
 			{"type": "text", "text": sb.String()},
+		},
+	}, nil
+}
+
+func (s *Server) handleGrantCreate(args map[string]any) (any, *rpcError) {
+	if s.Handler == nil || s.Handler.Grants == nil {
+		return nil, &rpcError{Code: -32603, Message: "Grant store not configured"}
+	}
+	tools, _ := args["tools"].(string)
+	duration, _ := args["duration"].(string)
+	if tools == "" || duration == "" {
+		return nil, &rpcError{Code: -32602, Message: "tools and duration are required"}
+	}
+	dur, err := time.ParseDuration(duration)
+	if err != nil {
+		return nil, &rpcError{Code: -32602, Message: "invalid duration: " + err.Error()}
+	}
+	g := s.Handler.Grants.Add(s.AgentID, tools, "mcp:"+s.AgentID, dur)
+	slog.Info("grant created via MCP",
+		"id", g.ID, "agent", g.Agent, "tools", g.Tools, "duration", duration)
+	return map[string]any{
+		"content": []map[string]any{
+			{"type": "text", "text": fmt.Sprintf("Grant created: %s\n  agent: %s\n  tools: %s\n  expires: %s\n  remaining: %s",
+				g.ID, g.Agent, g.Tools, g.ExpiresAt.Format(time.RFC3339), g.Remaining().Truncate(time.Second))},
+		},
+	}, nil
+}
+
+func (s *Server) handleGrantList() (any, *rpcError) {
+	if s.Handler == nil || s.Handler.Grants == nil {
+		return map[string]any{
+			"content": []map[string]any{
+				{"type": "text", "text": "No grant store configured."},
+			},
+		}, nil
+	}
+	grants := s.Handler.Grants.List()
+	if len(grants) == 0 {
+		return map[string]any{
+			"content": []map[string]any{
+				{"type": "text", "text": "No active grants."},
+			},
+		}, nil
+	}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Active grants (%d):\n", len(grants))
+	for _, g := range grants {
+		fmt.Fprintf(&sb, "- ID: %s  tools: %s  agent: %s  remaining: %s\n",
+			g.ID[:8], g.Tools, g.Agent, g.Remaining().Truncate(time.Second))
+	}
+	return map[string]any{
+		"content": []map[string]any{
+			{"type": "text", "text": sb.String()},
+		},
+	}, nil
+}
+
+func (s *Server) handleGrantRevoke(args map[string]any) (any, *rpcError) {
+	if s.Handler == nil || s.Handler.Grants == nil {
+		return nil, &rpcError{Code: -32603, Message: "Grant store not configured"}
+	}
+	id, _ := args["id"].(string)
+	if id == "" {
+		return nil, &rpcError{Code: -32602, Message: "id is required"}
+	}
+	if !s.Handler.Grants.Revoke(id) {
+		return nil, &rpcError{Code: -32602, Message: "grant not found: " + id}
+	}
+	slog.Info("grant revoked via MCP", "id", id)
+	return map[string]any{
+		"content": []map[string]any{
+			{"type": "text", "text": "Grant revoked: " + id},
 		},
 	}, nil
 }
