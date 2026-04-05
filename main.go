@@ -19,7 +19,17 @@ import (
 	"github.com/KTCrisis/agent-mesh/trace"
 )
 
+var (
+	version = "dev"
+	commit  = "none"
+)
+
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "version" {
+		fmt.Printf("agent-mesh %s (%s)\n", version, commit)
+		return
+	}
+
 	// Subcommand: discover
 	if len(os.Args) > 1 && os.Args[1] == "discover" {
 		runDiscover(os.Args[2:])
