@@ -44,6 +44,7 @@ Every tool call follows the same path, regardless of transport:
 ```
 Agent calls tool
   → Extract agent identity
+  → Rate limit check (calls/min, total budget, loop detection)
   → Look up tool in registry
   → Evaluate policy (allow / deny / human_approval)
   → Forward to upstream backend (HTTP or MCP)
@@ -196,6 +197,32 @@ policies:
 **Patterns:** `*` matches everything, `filesystem.*` matches all filesystem tools, `gmail.gmail_read_*` matches read operations. Uses Go's `filepath.Match` glob syntax.
 
 **Fail closed:** no matching rule = deny.
+
+### Rate limiting
+
+Per-agent call limits to prevent runaway agents and infinite loops:
+
+```yaml
+policies:
+  - name: support-agent
+    agent: "support-*"
+    rate_limit:
+      max_per_minute: 30    # sliding window
+      max_total: 1000       # lifetime budget (process lifetime)
+    rules:
+      - tools: ["get_order", "get_customer"]
+        action: allow
+```
+
+Three protections:
+
+| Protection | What it stops | Response |
+|------------|--------------|----------|
+| `max_per_minute` | Agent calling too fast (runaway loop) | HTTP 429 |
+| `max_total` | Agent exhausting its budget over time | HTTP 429 |
+| Loop detection | Same tool + same params > 3x in 10s | HTTP 429 `loop_detected` |
+
+Loop detection is always active. Rate limits are optional per policy. Both show up in traces as `"rate_limited"`.
 
 ### Human approval
 
@@ -402,8 +429,10 @@ agent-mesh/
 │   └── mcp.go             # Import MCP → tool catalog
 ├── policy/
 │   └── engine.go          # Rule evaluation engine (glob patterns, conditions)
+├── ratelimit/
+│   └── limiter.go         # Per-agent rate limiting + loop detection
 ├── proxy/
-│   └── handler.go         # HTTP proxy (auth → policy → forward → trace)
+│   └── handler.go         # HTTP proxy (auth → rate limit → policy → forward → trace)
 ├── mcp/
 │   ├── server.go          # Export MCP (stdio JSON-RPC, virtual approval tools)
 │   ├── client.go          # Import MCP (connect to upstream, stdio + SSE)
@@ -432,7 +461,7 @@ go test ./... -race        # With race detector
 go test ./proxy/ -v        # One package
 ```
 
-58 tests across 7 packages:
+120 tests across 9 packages:
 
 | Package | Tests | Covers |
 |---------|-------|--------|
@@ -440,6 +469,7 @@ go test ./proxy/ -v        # One package
 | `registry` | 10 | CRUD, loading, namespacing, concurrent access |
 | `policy` | 9 | Allow/deny, conditions, wildcards, globs, fail-closed |
 | `proxy` | 17 | REST and MCP calls, deny/approval flows, URL encoding |
+| `ratelimit` | 8 | Per-minute, total budget, loop detection, agent isolation |
 | `trace` | 11 | Record, filter, eviction, stats, JSONL persistence |
 | `mcp` | 16 | Client lifecycle, timeouts, SSE transport, approval flow |
 
@@ -454,7 +484,7 @@ go test ./proxy/ -v        # One package
 - [x] Trace store with query API + JSONL persistence
 - [x] Tool discovery + policy generation
 - [ ] JWT agent credentials (scopes + budget)
-- [ ] Rate limiting per agent
+- [x] Rate limiting per agent (sliding window + total budget + loop detection)
 - [ ] Temporal grants (`mesh grant` — sudo for agents)
 - [ ] Async HTTP approval (202 + poll)
 - [ ] Supervisor agent protocol

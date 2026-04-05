@@ -14,6 +14,7 @@ import (
 
 	"github.com/KTCrisis/agent-mesh/approval"
 	"github.com/KTCrisis/agent-mesh/policy"
+	"github.com/KTCrisis/agent-mesh/ratelimit"
 	"github.com/KTCrisis/agent-mesh/registry"
 	"github.com/KTCrisis/agent-mesh/trace"
 )
@@ -45,6 +46,7 @@ type Handler struct {
 	Policy       *policy.Engine
 	Traces       *trace.Store
 	Approvals    *approval.Store
+	RateLimiter  *ratelimit.Limiter
 	Client       *http.Client
 	MCPForwarder MCPForwarder
 }
@@ -103,7 +105,32 @@ func (h *Handler) handleToolCall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 3. Evaluate policy
+	// 3. Rate limit check (before policy — fail fast)
+	if h.RateLimiter != nil {
+		paramsKey := fmt.Sprintf("%v", req.Params)
+		// Pre-check with a preliminary policy match to get the policy name
+		preDecision := h.Policy.Evaluate(agentID, toolName, req.Params)
+		if err := h.RateLimiter.Check(agentID, preDecision.Rule, toolName, paramsKey); err != nil {
+			entry := trace.Entry{
+				AgentID:    agentID,
+				Tool:       toolName,
+				Params:     req.Params,
+				Policy:     "rate_limited",
+				PolicyRule: preDecision.Rule,
+				LatencyMs:  time.Since(start).Milliseconds(),
+				Error:      err.Error(),
+			}
+			h.Traces.Record(entry)
+			writeJSON(w, 429, ToolCallResponse{
+				TraceID: entry.TraceID,
+				Policy:  "rate_limited",
+				Error:   err.Error(),
+			})
+			return
+		}
+	}
+
+	// 4. Evaluate policy
 	decision := h.Policy.Evaluate(agentID, toolName, req.Params)
 	slog.Info("policy evaluated",
 		"agent", agentID, "tool", toolName,
@@ -175,6 +202,9 @@ func (h *Handler) handleToolCall(w http.ResponseWriter, r *http.Request) {
 
 		switch resolution.Status {
 		case approval.StatusApproved:
+			if h.RateLimiter != nil {
+				h.RateLimiter.Record(agentID, toolName, fmt.Sprintf("%v", req.Params))
+			}
 			result, statusCode, err := h.Forward(tool, req.Params)
 			totalMs := time.Since(start).Milliseconds()
 			h.Traces.Update(entry.TraceID, func(e *trace.Entry) {
@@ -219,7 +249,12 @@ func (h *Handler) handleToolCall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 4. Forward to backend
+	// 5. Record rate limit usage
+	if h.RateLimiter != nil {
+		h.RateLimiter.Record(agentID, toolName, fmt.Sprintf("%v", req.Params))
+	}
+
+	// 6. Forward to backend
 	result, statusCode, err := h.Forward(tool, req.Params)
 	latency := time.Since(start).Milliseconds()
 

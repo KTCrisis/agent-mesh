@@ -31,9 +31,16 @@ type MCPServerConfig struct {
 }
 
 type Policy struct {
-	Name  string `yaml:"name"`
-	Agent string `yaml:"agent"` // agent ID pattern (* = any)
-	Rules []Rule `yaml:"rules"`
+	Name      string     `yaml:"name"`
+	Agent     string     `yaml:"agent"` // agent ID pattern (* = any)
+	RateLimit *RateLimit `yaml:"rate_limit,omitempty"`
+	Rules     []Rule     `yaml:"rules"`
+}
+
+// RateLimit defines per-agent call constraints.
+type RateLimit struct {
+	MaxPerMinute int `yaml:"max_per_minute"` // max calls per sliding minute window
+	MaxTotal     int `yaml:"max_total"`      // max total calls (lifetime of process)
 }
 
 type Rule struct {

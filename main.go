@@ -16,6 +16,7 @@ import (
 	"github.com/KTCrisis/agent-mesh/mcp"
 	"github.com/KTCrisis/agent-mesh/policy"
 	"github.com/KTCrisis/agent-mesh/proxy"
+	"github.com/KTCrisis/agent-mesh/ratelimit"
 	"github.com/KTCrisis/agent-mesh/registry"
 	"github.com/KTCrisis/agent-mesh/trace"
 )
@@ -102,9 +103,24 @@ func main() {
 	approvals := approval.NewStore(approvalTimeout)
 	slog.Info("approval store ready", "timeout", approvalTimeout)
 
-	// 6. Build handler
+	// 6. Build rate limiter
+	limiter := ratelimit.New()
+	for _, p := range cfg.Policies {
+		if p.RateLimit != nil {
+			limiter.SetLimit(p.Name, ratelimit.Limit{
+				MaxPerMinute: p.RateLimit.MaxPerMinute,
+				MaxTotal:     p.RateLimit.MaxTotal,
+			})
+			slog.Info("rate limit configured", "policy", p.Name,
+				"max_per_minute", p.RateLimit.MaxPerMinute,
+				"max_total", p.RateLimit.MaxTotal)
+		}
+	}
+
+	// 7. Build handler
 	handler := proxy.NewHandler(reg, pol, traces)
 	handler.Approvals = approvals
+	handler.RateLimiter = limiter
 
 	// 7. Connect upstream MCP servers
 	var mcpManager *mcp.Manager

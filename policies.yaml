@@ -19,6 +19,9 @@ policies:
   # Support agent — can read but limited writes
   - name: support-agent
     agent: "support-*"
+    rate_limit:
+      max_per_minute: 30
+      max_total: 1000
     rules:
       # Read operations — always allowed
       - tools: ["get_pet_by_id", "find_pets_by_status", "get_inventory"]
@@ -39,6 +42,8 @@ policies:
   # Claude (MCP mode) — read access, write needs approval
   - name: claude-agent
     agent: "claude"
+    rate_limit:
+      max_per_minute: 60
     rules:
       - tools: ["get_pet_by_id", "find_pets_by_status", "find_pets_by_tags", "get_inventory", "get_order_by_id", "get_user_by_name", "login_user", "logout_user"]
         action: allow
