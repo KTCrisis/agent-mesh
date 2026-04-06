@@ -8,7 +8,7 @@ import (
 
 func TestSubmitAndApprove(t *testing.T) {
 	s := NewStore(5 * time.Second)
-	pa := s.Submit("claude", "write_file", "rule-1", map[string]any{"path": "/tmp/x"})
+	pa := s.Submit("claude", "write_file", "rule-1", map[string]any{"path": "/tmp/x"}, "")
 
 	go func() {
 		time.Sleep(10 * time.Millisecond)
@@ -34,7 +34,7 @@ func TestSubmitAndApprove(t *testing.T) {
 
 func TestSubmitAndDeny(t *testing.T) {
 	s := NewStore(5 * time.Second)
-	pa := s.Submit("claude", "send_email", "rule-2", nil)
+	pa := s.Submit("claude", "send_email", "rule-2", nil, "")
 
 	go func() {
 		time.Sleep(10 * time.Millisecond)
@@ -51,7 +51,7 @@ func TestSubmitAndDeny(t *testing.T) {
 
 func TestSubmitTimeout(t *testing.T) {
 	s := NewStore(50 * time.Millisecond)
-	pa := s.Submit("claude", "write_file", "rule-1", nil)
+	pa := s.Submit("claude", "write_file", "rule-1", nil, "")
 
 	res := <-pa.Result
 	if res.Status != StatusTimeout {
@@ -69,7 +69,7 @@ func TestSubmitTimeout(t *testing.T) {
 
 func TestDoubleResolve(t *testing.T) {
 	s := NewStore(5 * time.Second)
-	pa := s.Submit("claude", "write_file", "rule-1", nil)
+	pa := s.Submit("claude", "write_file", "rule-1", nil, "")
 
 	if err := s.Approve(pa.ID, "first"); err != nil {
 		t.Fatalf("first Approve: %v", err)
@@ -98,11 +98,11 @@ func TestGetNil(t *testing.T) {
 
 func TestList(t *testing.T) {
 	s := NewStore(5 * time.Second)
-	s.Submit("a", "tool1", "r", nil)
+	s.Submit("a", "tool1", "r", nil, "")
 	time.Sleep(time.Millisecond)
-	s.Submit("b", "tool2", "r", nil)
+	s.Submit("b", "tool2", "r", nil, "")
 	time.Sleep(time.Millisecond)
-	pa3 := s.Submit("c", "tool3", "r", nil)
+	pa3 := s.Submit("c", "tool3", "r", nil, "")
 
 	all := s.List()
 	if len(all) != 3 {
@@ -124,7 +124,7 @@ func TestList(t *testing.T) {
 
 func TestConcurrentResolve(t *testing.T) {
 	s := NewStore(5 * time.Second)
-	pa := s.Submit("claude", "write_file", "rule-1", nil)
+	pa := s.Submit("claude", "write_file", "rule-1", nil, "")
 
 	var wg sync.WaitGroup
 	successes := make(chan string, 10)
@@ -154,7 +154,7 @@ func TestConcurrentResolve(t *testing.T) {
 
 func TestPrefixMatch(t *testing.T) {
 	s := NewStore(5 * time.Second)
-	pa := s.Submit("claude", "write_file", "r", nil)
+	pa := s.Submit("claude", "write_file", "r", nil, "")
 
 	// Prefix match
 	prefix := pa.ID[:8]
@@ -179,8 +179,8 @@ func TestPrefixMatch(t *testing.T) {
 
 func TestPrefixMatchAmbiguous(t *testing.T) {
 	s := NewStore(5 * time.Second)
-	s.Submit("a", "t", "r", nil)
-	s.Submit("b", "t", "r", nil)
+	s.Submit("a", "t", "r", nil, "")
+	s.Submit("b", "t", "r", nil, "")
 
 	// Single char prefix — likely ambiguous
 	got := s.Get("")
@@ -198,7 +198,7 @@ func TestDefaultTimeout(t *testing.T) {
 
 func TestRemaining(t *testing.T) {
 	s := NewStore(1 * time.Second)
-	pa := s.Submit("claude", "tool", "r", nil)
+	pa := s.Submit("claude", "tool", "r", nil, "")
 
 	rem := pa.Remaining(s.Timeout())
 	if rem <= 0 || rem > 1*time.Second {

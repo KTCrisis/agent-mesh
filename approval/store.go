@@ -28,17 +28,18 @@ type Resolution struct {
 
 // PendingApproval represents a tool call waiting for human decision.
 type PendingApproval struct {
-	ID         string         `json:"id"`
-	AgentID    string         `json:"agent_id"`
-	Tool       string         `json:"tool"`
-	Params     map[string]any `json:"params"`
-	PolicyRule string         `json:"policy_rule"`
-	TraceID    string         `json:"trace_id,omitempty"`
-	Status     Status         `json:"status"`
-	CreatedAt  time.Time      `json:"created_at"`
-	ResolvedBy string         `json:"resolved_by,omitempty"`
-	ResolvedAt time.Time      `json:"resolved_at,omitempty"`
-	Result     chan Resolution `json:"-"`
+	ID          string         `json:"id"`
+	AgentID     string         `json:"agent_id"`
+	Tool        string         `json:"tool"`
+	Params      map[string]any `json:"params"`
+	PolicyRule  string         `json:"policy_rule"`
+	TraceID     string         `json:"trace_id,omitempty"`
+	CallbackURL string         `json:"callback_url,omitempty"`
+	Status      Status         `json:"status"`
+	CreatedAt   time.Time      `json:"created_at"`
+	ResolvedBy  string         `json:"resolved_by,omitempty"`
+	ResolvedAt  time.Time      `json:"resolved_at,omitempty"`
+	Result      chan Resolution `json:"-"`
 }
 
 // Remaining returns how much time is left before timeout.
@@ -52,9 +53,10 @@ func (p *PendingApproval) Remaining(timeout time.Duration) time.Duration {
 
 // Store manages pending approvals with channel-based blocking.
 type Store struct {
-	mu      sync.RWMutex
-	pending map[string]*PendingApproval
-	timeout time.Duration
+	mu       sync.RWMutex
+	pending  map[string]*PendingApproval
+	timeout  time.Duration
+	Notifier *Notifier
 }
 
 // NewStore creates an approval store with the given default timeout.
@@ -75,21 +77,26 @@ func (s *Store) Timeout() time.Duration {
 
 // Submit creates a pending approval and starts a timeout goroutine.
 // The caller should block on the returned PendingApproval.Result channel.
-func (s *Store) Submit(agentID, tool, policyRule string, params map[string]any) *PendingApproval {
+// callbackURL is optional — set from X-Callback-URL header for HTTP agents.
+func (s *Store) Submit(agentID, tool, policyRule string, params map[string]any, callbackURL string) *PendingApproval {
 	pa := &PendingApproval{
-		ID:         newID(),
-		AgentID:    agentID,
-		Tool:       tool,
-		Params:     params,
-		PolicyRule: policyRule,
-		Status:     StatusPending,
-		CreatedAt:  time.Now().UTC(),
-		Result:     make(chan Resolution, 1),
+		ID:          newID(),
+		AgentID:     agentID,
+		Tool:        tool,
+		Params:      params,
+		PolicyRule:  policyRule,
+		CallbackURL: callbackURL,
+		Status:      StatusPending,
+		CreatedAt:   time.Now().UTC(),
+		Result:      make(chan Resolution, 1),
 	}
 
 	s.mu.Lock()
 	s.pending[pa.ID] = pa
 	s.mu.Unlock()
+
+	// Notify webhook (new pending → human)
+	s.Notifier.OnSubmit(pa)
 
 	// Timeout goroutine
 	go func() {
@@ -101,11 +108,14 @@ func (s *Store) Submit(agentID, tool, policyRule string, params map[string]any) 
 		}
 		pa.Status = StatusTimeout
 		pa.ResolvedAt = time.Now().UTC()
-		pa.Result <- Resolution{
+		res := Resolution{
 			Status:     StatusTimeout,
 			ResolvedBy: "system:timeout",
 			ResolvedAt: pa.ResolvedAt,
 		}
+		pa.Result <- res
+		// Callback agent on timeout too
+		s.Notifier.OnResolve(pa, res)
 	}()
 
 	return pa
@@ -135,11 +145,14 @@ func (s *Store) Resolve(id string, status Status, resolvedBy string) error {
 	pa.Status = status
 	pa.ResolvedBy = resolvedBy
 	pa.ResolvedAt = now
-	pa.Result <- Resolution{
+	res := Resolution{
 		Status:     status,
 		ResolvedBy: resolvedBy,
 		ResolvedAt: now,
 	}
+	pa.Result <- res
+	// Callback agent (if X-Callback-URL was set)
+	s.Notifier.OnResolve(pa, res)
 	return nil
 }
 

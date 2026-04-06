@@ -569,7 +569,7 @@ func TestHandleApprovalNotFound(t *testing.T) {
 func TestHandleApprovalAlreadyResolved(t *testing.T) {
 	handler, _ := approvalHandler(t)
 
-	pa := handler.Approvals.Submit("claude", "tool", "rule", nil)
+	pa := handler.Approvals.Submit("claude", "tool", "rule", nil, "")
 	handler.Approvals.Approve(pa.ID, "first")
 
 	req := httptest.NewRequest("POST", "/approvals/"+pa.ID+"/approve",
@@ -585,7 +585,7 @@ func TestHandleApprovalAlreadyResolved(t *testing.T) {
 func TestHandleGetApproval(t *testing.T) {
 	handler, _ := approvalHandler(t)
 
-	pa := handler.Approvals.Submit("claude", "write_file", "rule-1", map[string]any{"path": "/tmp/x"})
+	pa := handler.Approvals.Submit("claude", "write_file", "rule-1", map[string]any{"path": "/tmp/x"}, "")
 
 	req := httptest.NewRequest("GET", "/approvals/"+pa.ID, nil)
 	w := httptest.NewRecorder()

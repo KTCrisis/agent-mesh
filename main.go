@@ -99,9 +99,13 @@ func main() {
 		slog.Info("trace store ready", "mode", "in-memory")
 	}
 
-	// 5. Build approval store
+	// 5. Build approval store + notifier
 	approvalTimeout := time.Duration(cfg.Approval.TimeoutSeconds) * time.Second
 	approvals := approval.NewStore(approvalTimeout)
+	approvals.Notifier = approval.NewNotifier(cfg.Approval.NotifyURL)
+	if cfg.Approval.NotifyURL != "" {
+		slog.Info("approval notify webhook configured", "url", cfg.Approval.NotifyURL)
+	}
 	slog.Info("approval store ready", "timeout", approvalTimeout)
 
 	// 6. Build rate limiter

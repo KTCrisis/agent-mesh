@@ -340,7 +340,7 @@ func (s *Server) handleToolsCall(params map[string]any) (any, *rpcError) {
 			}, nil
 		}
 
-		pending := s.Approvals.Submit(s.AgentID, toolName, decision.Rule, arguments)
+		pending := s.Approvals.Submit(s.AgentID, toolName, decision.Rule, arguments, "")
 		entry.ApprovalID = pending.ID
 		s.Traces.Record(entry)
 		pending.TraceID = entry.TraceID

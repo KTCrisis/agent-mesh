@@ -195,7 +195,8 @@ func (h *Handler) handleToolCall(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		pending := h.Approvals.Submit(agentID, toolName, decision.Rule, req.Params)
+		callbackURL := r.Header.Get("X-Callback-URL")
+		pending := h.Approvals.Submit(agentID, toolName, decision.Rule, req.Params, callbackURL)
 
 		entry := trace.Entry{
 			AgentID:    agentID,

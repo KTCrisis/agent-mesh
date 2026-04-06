@@ -16,7 +16,8 @@ type Config struct {
 
 // ApprovalConfig controls the human approval gate behavior.
 type ApprovalConfig struct {
-	TimeoutSeconds int `yaml:"timeout_seconds"` // default 300 (5 min)
+	TimeoutSeconds int    `yaml:"timeout_seconds"` // default 300 (5 min)
+	NotifyURL      string `yaml:"notify_url"`      // webhook URL for new pending approvals
 }
 
 // MCPServerConfig declares an upstream MCP server to connect to.
