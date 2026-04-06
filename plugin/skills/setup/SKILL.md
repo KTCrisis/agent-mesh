@@ -1,6 +1,6 @@
 ---
 name: setup
-description: Generate a starter policies.yaml config for agent-mesh
+description: Generate a starter config.yaml config for agent-mesh
 user-invocable: true
 argument-hint: "[template]"
 allowed-tools:
@@ -89,4 +89,4 @@ policies:
         action: deny
 ```
 
-Write the config to `policies.yaml` in the current directory. Confirm the file was written.
+Write the config to `config.yaml` in the current directory. Confirm the file was written.

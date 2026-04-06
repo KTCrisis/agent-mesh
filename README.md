@@ -69,7 +69,7 @@ No policy. No trace. No control. If something goes wrong, you may not even know 
 Put Agent Mesh between the agent and its tools:
 
 ```bash
-claude mcp add agent-mesh -- ./agent-mesh --mcp --config policies.yaml
+claude mcp add agent-mesh -- ./agent-mesh --mcp --config config.yaml
 ```
 
 ```
@@ -127,7 +127,7 @@ go build -o agent-mesh .
 ### 1. Write a config
 
 ```yaml
-# policies.yaml
+# config.yaml
 mcp_servers:
   - name: filesystem
     transport: stdio
@@ -155,7 +155,7 @@ policies:
 ### 2. Plug into Claude Code
 
 ```bash
-claude mcp add agent-mesh -- agent-mesh --mcp --config policies.yaml
+claude mcp add agent-mesh -- agent-mesh --mcp --config config.yaml
 ```
 
 ### 3. Use normally
@@ -308,10 +308,10 @@ Auto-discover tools from upstream sources and generate starter policies:
 
 ```bash
 # Discover tools from MCP servers in config
-./agent-mesh discover --config policies.yaml
+./agent-mesh discover --config config.yaml
 
 # Generate a safe starter policy (reads allowed, writes denied)
-./agent-mesh discover --config policies.yaml --generate-policy
+./agent-mesh discover --config config.yaml --generate-policy
 
 # Discover from an OpenAPI spec
 ./agent-mesh discover --openapi https://petstore.swagger.io/v2/swagger.json --generate-policy
@@ -354,7 +354,7 @@ mesh watch                      # Interactive mode — approve/deny as they come
 Turn any REST API into governed tools:
 
 ```bash
-./agent-mesh --mcp --openapi https://petstore.swagger.io/v2/swagger.json --config policies.yaml
+./agent-mesh --mcp --openapi https://petstore.swagger.io/v2/swagger.json --config config.yaml
 ```
 
 ### Import MCP
@@ -380,7 +380,7 @@ mcp_servers:
 Expose all governed tools as a standard MCP server for Claude Code, Cursor, or any MCP client:
 
 ```bash
-claude mcp add agent-mesh -- ./agent-mesh --mcp --config policies.yaml
+claude mcp add agent-mesh -- ./agent-mesh --mcp --config config.yaml
 ```
 
 All modes compose. Import REST + MCP, apply one policy, export as unified MCP.
@@ -446,7 +446,7 @@ Result: Claude searches flights, checks weather, estimates budgets — all trace
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--config` | `policies.yaml` | Path to YAML config |
+| `--config` | `config.yaml` | Path to YAML config |
 | `--openapi` | | OpenAPI spec URL |
 | `--backend` | | Backend base URL override |
 | `--port` | from config or `9090` | Port override |
@@ -484,7 +484,7 @@ agent-mesh/
 ├── trace/
 │   └── store.go           # In-memory trace store + JSONL persistence
 ├── cmd/mesh/              # CLI binary (pending/approve/deny/watch)
-├── configs/               # Example config files
+├── examples/              # Example config files
 │   ├── my-flow.yaml       # Unified config (filesystem + gmail + travel)
 │   └── travel-agent.yaml  # Standalone travel agent example
 └── docs/

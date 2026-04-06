@@ -140,7 +140,7 @@ agent-mesh/
 ├── trace/
 │   ├── store.go               # Store de traces en mémoire
 │   └── store_test.go
-├── policies.yaml              # Config exemple
+├── config.yaml              # Config exemple
 ├── go.mod                     # Dépendances (comme package.json)
 └── go.sum                     # Lock file (comme package-lock.json)
 ```

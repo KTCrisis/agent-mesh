@@ -247,7 +247,7 @@ Not foolproof, but raises the cost of attack. Combined with structural evaluatio
 ## Configuration
 
 ```yaml
-# policies.yaml
+# config.yaml
 
 supervisor:
   enabled: true

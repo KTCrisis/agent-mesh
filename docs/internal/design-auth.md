@@ -75,7 +75,7 @@ No scopes in the token. The policy engine already handles authorization. JWT han
 ### Config
 
 ```yaml
-# policies.yaml
+# config.yaml
 auth:
   secret: "change-me-in-production"   # HMAC-SHA256 signing key
   # If absent, HTTP mode falls back to Bearer agent:<id> (current behavior)

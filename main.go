@@ -39,7 +39,7 @@ func main() {
 		return
 	}
 
-	configPath := flag.String("config", "policies.yaml", "Path to config/policies YAML")
+	configPath := flag.String("config", "config.yaml", "Path to config YAML")
 	specURL := flag.String("openapi", "", "OpenAPI spec URL to load")
 	backendURL := flag.String("backend", "", "Backend base URL (overrides spec)")
 	port := flag.Int("port", 0, "Port override (default from config or 9090)")

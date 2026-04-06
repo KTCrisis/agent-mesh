@@ -361,7 +361,7 @@ Grants are:
 ## Configuration
 
 ```yaml
-# policies.yaml
+# config.yaml
 
 approval:
   timeout: 5m              # default timeout for pending approvals

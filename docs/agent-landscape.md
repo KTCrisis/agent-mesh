@@ -158,7 +158,7 @@ Agent-mesh doesn't replace any of these tools. It doesn't compete with their bui
 
 | Agent | How to integrate | Effort |
 |-------|-----------------|--------|
-| **Claude Code** | `claude mcp add agent-mesh -- ./agent-mesh --mcp --config policies.yaml` | 2 minutes |
+| **Claude Code** | `claude mcp add agent-mesh -- ./agent-mesh --mcp --config config.yaml` | 2 minutes |
 | **Cursor** | Add to `.cursor/mcp.json` | 2 minutes |
 | **Gemini CLI** | Add as MCP server in settings | 2 minutes |
 | **OpenCode** | Add as MCP server in config | 2 minutes |
