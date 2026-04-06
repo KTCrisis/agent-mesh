@@ -90,32 +90,31 @@ The agent sees a normal tool surface. Agent Mesh enforces policy and records tra
 Grab the latest release for your platform:
 
 ```bash
+# Get latest version tag
+VERSION=$(curl -s https://api.github.com/repos/KTCrisis/agent-mesh/releases/latest | grep tag_name | cut -d '"' -f4)
+
 # Linux (amd64)
-curl -L https://github.com/KTCrisis/agent-mesh/releases/latest/download/agent-mesh_0.4.1_linux_amd64.tar.gz | tar xz
+curl -L "https://github.com/KTCrisis/agent-mesh/releases/download/${VERSION}/agent-mesh_${VERSION#v}_linux_amd64.tar.gz" | tar xz
 sudo mv agent-mesh /usr/local/bin/
 
 # Linux (arm64)
-curl -L https://github.com/KTCrisis/agent-mesh/releases/latest/download/agent-mesh_0.4.1_linux_arm64.tar.gz | tar xz
+curl -L "https://github.com/KTCrisis/agent-mesh/releases/download/${VERSION}/agent-mesh_${VERSION#v}_linux_arm64.tar.gz" | tar xz
 sudo mv agent-mesh /usr/local/bin/
 
 # macOS (Apple Silicon)
-curl -L https://github.com/KTCrisis/agent-mesh/releases/latest/download/agent-mesh_0.4.1_darwin_arm64.tar.gz | tar xz
+curl -L "https://github.com/KTCrisis/agent-mesh/releases/download/${VERSION}/agent-mesh_${VERSION#v}_darwin_arm64.tar.gz" | tar xz
 sudo mv agent-mesh /usr/local/bin/
 
 # macOS (Intel)
-curl -L https://github.com/KTCrisis/agent-mesh/releases/latest/download/agent-mesh_0.4.1_darwin_amd64.tar.gz | tar xz
+curl -L "https://github.com/KTCrisis/agent-mesh/releases/download/${VERSION}/agent-mesh_${VERSION#v}_darwin_amd64.tar.gz" | tar xz
 sudo mv agent-mesh /usr/local/bin/
-
-# Windows (PowerShell)
-Invoke-WebRequest -Uri https://github.com/KTCrisis/agent-mesh/releases/latest/download/agent-mesh_0.4.1_windows_amd64.zip -OutFile agent-mesh.zip
-Expand-Archive agent-mesh.zip -DestinationPath .
 ```
 
 All releases: [github.com/KTCrisis/agent-mesh/releases](https://github.com/KTCrisis/agent-mesh/releases)
 
 ### Build from source
 
-Requires Go 1.22+:
+Requires Go 1.24+:
 
 ```bash
 git clone https://github.com/KTCrisis/agent-mesh.git

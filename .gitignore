@@ -18,6 +18,14 @@ CLAUDE.md
 # Go
 vendor/
 
+# Environment
+.env
+.env.*
+
+# Debug / Test artifacts
+*.debug
+*.test
+
 # Project
 traces.jsonl
 traces-*.jsonl
