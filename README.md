@@ -1,6 +1,6 @@
 # Agent Mesh
 
-**Guardail for AI agents.**
+**Guardrail for AI agents.**
 An open-source sidecar proxy that sits between AI agents and their tools — adding policy, human approval, and tracing without changing agent code.
 
 One binary. One YAML config. Fail closed by default.
@@ -485,12 +485,12 @@ agent-mesh/
 │   └── store.go           # In-memory trace store + JSONL persistence
 ├── cmd/mesh/              # CLI binary (pending/approve/deny/watch)
 ├── examples/              # Example config files
-│   ├── my-flow.yaml       # Unified config (filesystem + gmail + travel)
-│   └── travel-agent.yaml  # Standalone travel agent example
+│   ├── filesystem.yaml    # Filesystem governance (read/write/deny)
+│   ├── petstore.yaml      # OpenAPI import demo (Petstore)
+│   └── travel-agent.yaml  # Multi-tool travel agent
 └── docs/
-    ├── design-human-approval.md
-    ├── design-agent-supervisor.md
-    └── roadmap-approval.md
+    ├── agent-landscape.md # AI agent CLI landscape survey
+    └── positioning.md     # Market positioning and comparisons
 ```
 
 ## Tests

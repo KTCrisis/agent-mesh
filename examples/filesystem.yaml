@@ -1,0 +1,30 @@
+port: 9090
+trace_file: traces.jsonl
+
+mcp_servers:
+  - name: filesystem
+    transport: stdio
+    command: npx
+    args: ["-y", "@modelcontextprotocol/server-filesystem", "/home/me/projects"]
+
+policies:
+  - name: claude
+    agent: "claude"
+    rules:
+      # Read operations — always allowed
+      - tools: ["filesystem.read_*", "filesystem.list_*", "filesystem.search_*", "filesystem.get_*", "filesystem.directory_tree"]
+        action: allow
+
+      # Write operations — human approval required
+      - tools: ["filesystem.write_file", "filesystem.edit_file", "filesystem.create_directory"]
+        action: human_approval
+
+      # Move/rename — denied (destructive, hard to undo)
+      - tools: ["filesystem.move_file"]
+        action: deny
+
+  - name: default
+    agent: "*"
+    rules:
+      - tools: ["*"]
+        action: deny
