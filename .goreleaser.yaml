@@ -1,3 +1,5 @@
+version: 2
+
 project_name: agent-mesh
 
 before:
@@ -20,11 +22,13 @@ builds:
       - -s -w -X main.version={{.Version}} -X main.commit={{.ShortCommit}}
 
 archives:
-  - format: tar.gz
-    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+  - formats:
+      - tar.gz
     format_overrides:
       - goos: windows
-        format: zip
+        formats:
+          - zip
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
 
 checksum:
   name_template: "checksums.txt"
