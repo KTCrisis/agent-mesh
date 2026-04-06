@@ -1,6 +1,6 @@
 # Agent Mesh
 
-** Guardrail for AI agents.**
+**Guardail for AI agents.**
 An open-source sidecar proxy that sits between AI agents and their tools — adding policy, human approval, and tracing without changing agent code.
 
 One binary. One YAML config. Fail closed by default.
