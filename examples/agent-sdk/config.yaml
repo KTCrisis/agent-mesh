@@ -1,0 +1,31 @@
+port: 9092
+trace_file: traces.jsonl
+
+approval:
+  timeout_seconds: 120
+  notify_url: ""  # set to a Slack webhook URL to get notified
+
+mcp_servers:
+  - name: filesystem
+    transport: stdio
+    command: npx
+    args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp/demo"]
+
+policies:
+  # Claude Agent SDK — read is allowed, write requires approval
+  - name: claude-agent
+    agent: "claude-agent"
+    rules:
+      - tools: ["filesystem.read_*", "filesystem.list_*", "filesystem.search_*", "filesystem.get_*", "filesystem.directory_tree"]
+        action: allow
+      - tools: ["filesystem.write_*", "filesystem.edit_*", "filesystem.create_*", "filesystem.move_*"]
+        action: human_approval
+      - tools: ["filesystem.*"]
+        action: deny
+
+  # Default — deny everything
+  - name: default
+    agent: "*"
+    rules:
+      - tools: ["*"]
+        action: deny
