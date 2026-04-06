@@ -18,6 +18,10 @@ CLAUDE.md
 # Go
 vendor/
 
+# Python
+.venv/
+__pycache__/
+
 # Environment
 .env
 .env.*

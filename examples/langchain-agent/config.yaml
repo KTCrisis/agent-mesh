@@ -1,0 +1,32 @@
+port: 9090
+trace_file: traces.jsonl
+
+mcp_servers:
+  - name: filesystem
+    transport: stdio
+    command: npx
+    args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp/demo"]
+
+policies:
+  # Claude Code — full access to filesystem
+  - name: claude
+    agent: "claude"
+    rules:
+      - tools: ["filesystem.*"]
+        action: allow
+
+  # LangChain bot — read only
+  - name: langchain-bot
+    agent: "langchain-bot"
+    rules:
+      - tools: ["filesystem.read_*", "filesystem.list_*", "filesystem.search_*", "filesystem.get_*", "filesystem.directory_tree"]
+        action: allow
+      - tools: ["filesystem.*"]
+        action: deny
+
+  # Default — deny everything
+  - name: default
+    agent: "*"
+    rules:
+      - tools: ["*"]
+        action: deny
