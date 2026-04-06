@@ -124,7 +124,19 @@ go build -o agent-mesh .
 
 ## Quick start
 
-### 1. Write a config
+### 1. Generate a config
+
+```bash
+# From an OpenAPI spec — turns any REST API into governed MCP tools
+./agent-mesh discover --openapi https://petstore.swagger.io/v2/swagger.json --generate-policy > config.yaml
+
+# Or from MCP servers already defined in a config
+./agent-mesh discover --config config.yaml --generate-policy
+```
+
+This discovers all available tools and generates a safe starter policy (reads allowed, writes denied).
+
+Or write one manually:
 
 ```yaml
 # config.yaml
