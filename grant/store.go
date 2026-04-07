@@ -3,9 +3,10 @@ package grant
 import (
 	"crypto/rand"
 	"encoding/hex"
-	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/KTCrisis/agent-mesh/internal/match"
 )
 
 // Grant is a temporary permission override.
@@ -126,11 +127,7 @@ func (s *Store) Cleanup() int {
 }
 
 func matchPattern(pattern, value string) bool {
-	if pattern == "*" {
-		return true
-	}
-	matched, _ := filepath.Match(pattern, value)
-	return matched
+	return match.Glob(pattern, value)
 }
 
 func newID() string {

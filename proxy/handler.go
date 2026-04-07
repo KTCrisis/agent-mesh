@@ -234,7 +234,7 @@ func (h *Handler) handleToolCall(w http.ResponseWriter, r *http.Request) {
 			if h.RateLimiter != nil {
 				h.RateLimiter.Record(agentID, toolName, fmt.Sprintf("%v", req.Params))
 			}
-			result, statusCode, err := h.ForwardWithTrace(tool, req.Params, traceID)
+			result, statusCode, err := h.Forward(tool, req.Params, traceID)
 			totalMs := time.Since(start).Milliseconds()
 			h.Traces.Update(entry.TraceID, func(e *trace.Entry) {
 				e.StatusCode = statusCode
@@ -284,7 +284,7 @@ func (h *Handler) handleToolCall(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 6. Forward to backend
-	result, statusCode, err := h.ForwardWithTrace(tool, req.Params, traceID)
+	result, statusCode, err := h.Forward(tool, req.Params, traceID)
 	latency := time.Since(start).Milliseconds()
 
 	// 5. Trace
@@ -318,20 +318,13 @@ func (h *Handler) handleToolCall(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, resp)
 }
 
-// ForwardWithTrace sends the request to the appropriate backend, propagating the trace ID.
-func (h *Handler) ForwardWithTrace(tool *registry.Tool, params map[string]any, traceID string) (any, int, error) {
+// Forward sends the request to the appropriate backend (HTTP or MCP).
+// traceID is propagated to HTTP backends via Traceparent and X-Trace-Id headers.
+func (h *Handler) Forward(tool *registry.Tool, params map[string]any, traceID string) (any, int, error) {
 	if tool.Source == "mcp" {
 		return h.forwardMCP(tool, params)
 	}
 	return h.forwardHTTP(tool, params, traceID)
-}
-
-// Forward sends the request to the appropriate backend (HTTP or MCP).
-func (h *Handler) Forward(tool *registry.Tool, params map[string]any) (any, int, error) {
-	if tool.Source == "mcp" {
-		return h.forwardMCP(tool, params)
-	}
-	return h.forwardHTTP(tool, params, "")
 }
 
 // forwardHTTP sends the request to a REST backend.

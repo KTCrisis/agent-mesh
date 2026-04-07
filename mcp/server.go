@@ -297,7 +297,7 @@ func (s *Server) handleToolsCall(params map[string]any) (any, *rpcError) {
 					e.ApprovedBy = resolvedBy
 				})
 
-				result, statusCode, err := s.Handler.Forward(tool, arguments)
+				result, statusCode, err := s.Handler.Forward(tool, arguments, "")
 				s.Traces.Update(entry.TraceID, func(e *trace.Entry) {
 					e.StatusCode = statusCode
 					if err != nil {
@@ -363,7 +363,7 @@ func (s *Server) handleToolsCall(params map[string]any) (any, *rpcError) {
 	}
 
 	// Forward to backend
-	result, statusCode, err := s.Handler.Forward(tool, arguments)
+	result, statusCode, err := s.Handler.Forward(tool, arguments, "")
 
 	// Trace
 	entry := trace.Entry{
@@ -465,7 +465,7 @@ func (s *Server) handleApprovalResolve(args map[string]any) (any, *rpcError) {
 		}, nil
 	}
 
-	result, statusCode, err := s.Handler.Forward(tool, pa.Params)
+	result, statusCode, err := s.Handler.Forward(tool, pa.Params, "")
 	if pa.TraceID != "" {
 		s.Traces.Update(pa.TraceID, func(e *trace.Entry) {
 			e.ApprovalStatus = string(approval.StatusApproved)

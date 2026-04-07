@@ -197,36 +197,27 @@ func (s *Store) findLocked(id string) *PendingApproval {
 func (s *Store) List() []*PendingApproval {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-
-	result := make([]*PendingApproval, 0, len(s.pending))
-	for _, pa := range s.pending {
-		result = append(result, pa)
-	}
-
-	// Sort most recent first
-	for i := 0; i < len(result); i++ {
-		for j := i + 1; j < len(result); j++ {
-			if result[j].CreatedAt.After(result[i].CreatedAt) {
-				result[i], result[j] = result[j], result[i]
-			}
-		}
-	}
-	return result
+	return s.collectLocked(nil)
 }
 
 // ListPending returns only pending approvals, most recent first.
 func (s *Store) ListPending() []*PendingApproval {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	return s.collectLocked(func(pa *PendingApproval) bool {
+		return pa.Status == StatusPending
+	})
+}
 
-	result := make([]*PendingApproval, 0)
+// collectLocked gathers approvals matching filter (nil = all), sorted most recent first.
+// Caller must hold s.mu.
+func (s *Store) collectLocked(filter func(*PendingApproval) bool) []*PendingApproval {
+	result := make([]*PendingApproval, 0, len(s.pending))
 	for _, pa := range s.pending {
-		if pa.Status == StatusPending {
+		if filter == nil || filter(pa) {
 			result = append(result, pa)
 		}
 	}
-
-	// Sort most recent first
 	for i := 0; i < len(result); i++ {
 		for j := i + 1; j < len(result); j++ {
 			if result[j].CreatedAt.After(result[i].CreatedAt) {

@@ -39,13 +39,13 @@ func main() {
 			fmt.Fprintln(os.Stderr, "usage: mesh approve <id>")
 			os.Exit(1)
 		}
-		cmdResolve(os.Args[2], "approve")
+		resolve(os.Args[2], "approve", false)
 	case "deny":
 		if len(os.Args) < 3 {
 			fmt.Fprintln(os.Stderr, "usage: mesh deny <id>")
 			os.Exit(1)
 		}
-		cmdResolve(os.Args[2], "deny")
+		resolve(os.Args[2], "deny", false)
 	case "watch":
 		cmdWatch()
 	default:
@@ -90,7 +90,10 @@ func cmdPending() {
 	defer resp.Body.Close()
 
 	var list []approvalView
-	json.NewDecoder(resp.Body).Decode(&list)
+	if err := json.NewDecoder(resp.Body).Decode(&list); err != nil {
+		fmt.Fprintf(os.Stderr, "error decoding response: %v\n", err)
+		os.Exit(1)
+	}
 
 	if len(list) == 0 {
 		fmt.Println("no pending approvals")
@@ -121,7 +124,10 @@ func cmdShow(id string) {
 	}
 
 	var a approvalView
-	json.NewDecoder(resp.Body).Decode(&a)
+	if err := json.NewDecoder(resp.Body).Decode(&a); err != nil {
+		fmt.Fprintf(os.Stderr, "error decoding response: %v\n", err)
+		os.Exit(1)
+	}
 
 	fmt.Printf("ID:       %s\n", a.ID)
 	fmt.Printf("Agent:    %s\n", a.AgentID)
@@ -182,10 +188,10 @@ func cmdWatch() {
 
 				switch input {
 				case "a", "approve":
-					resolve(a.ID[:8], "approve")
+					resolve(a.ID[:8], "approve", true)
 					seen[a.ID] = true
 				case "d", "deny":
-					resolve(a.ID[:8], "deny")
+					resolve(a.ID[:8], "deny", true)
 					seen[a.ID] = true
 				case "s", "skip":
 					seen[a.ID] = true
@@ -209,59 +215,59 @@ func fetchPending() []approvalView {
 	}
 	defer resp.Body.Close()
 	var list []approvalView
-	json.NewDecoder(resp.Body).Decode(&list)
+	_ = json.NewDecoder(resp.Body).Decode(&list) // best-effort in watch loop
 	return list
 }
 
-func resolve(id string, action string) {
+// resolve posts an approve/deny action. In interactive mode (watch), errors are
+// printed inline. In CLI mode, errors cause exit(1).
+func resolve(id string, action string, interactive bool) {
 	body := fmt.Sprintf(`{"resolved_by":"cli:%s"}`, os.Getenv("USER"))
 	resp, err := http.Post(meshURL+"/approvals/"+id+"/"+action,
 		"application/json", strings.NewReader(body))
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "  error: %v\n", err)
+		if interactive {
+			fmt.Fprintf(os.Stderr, "  error: %v\n", err)
+		} else {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
 		return
 	}
 	defer resp.Body.Close()
 
-	switch resp.StatusCode {
-	case 200:
-		verb := "Approved"
-		if action == "deny" {
-			verb = "Denied"
-		}
-		fmt.Printf("  %s\n", verb)
-	case 409:
-		fmt.Println("  already resolved")
-	default:
-		fmt.Fprintf(os.Stderr, "  error: status %d\n", resp.StatusCode)
+	verb := "Approved"
+	if action == "deny" {
+		verb = "Denied"
 	}
-}
-
-func cmdResolve(id string, action string) {
-	body := fmt.Sprintf(`{"resolved_by":"cli:%s"}`, os.Getenv("USER"))
-	resp, err := http.Post(meshURL+"/approvals/"+id+"/"+action,
-		"application/json", strings.NewReader(body))
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
-	}
-	defer resp.Body.Close()
 
 	switch resp.StatusCode {
 	case 200:
-		verb := "Approved"
-		if action == "deny" {
-			verb = "Denied"
+		if interactive {
+			fmt.Printf("  %s\n", verb)
+		} else {
+			fmt.Printf("%s: %s\n", verb, id)
 		}
-		fmt.Printf("%s: %s\n", verb, id)
 	case 404:
-		fmt.Fprintf(os.Stderr, "approval %s not found\n", id)
-		os.Exit(1)
+		if interactive {
+			fmt.Fprintf(os.Stderr, "  not found\n")
+		} else {
+			fmt.Fprintf(os.Stderr, "approval %s not found\n", id)
+			os.Exit(1)
+		}
 	case 409:
-		fmt.Fprintf(os.Stderr, "approval %s already resolved\n", id)
-		os.Exit(1)
+		if interactive {
+			fmt.Println("  already resolved")
+		} else {
+			fmt.Fprintf(os.Stderr, "approval %s already resolved\n", id)
+			os.Exit(1)
+		}
 	default:
-		fmt.Fprintf(os.Stderr, "unexpected status: %d\n", resp.StatusCode)
-		os.Exit(1)
+		if interactive {
+			fmt.Fprintf(os.Stderr, "  error: status %d\n", resp.StatusCode)
+		} else {
+			fmt.Fprintf(os.Stderr, "unexpected status: %d\n", resp.StatusCode)
+			os.Exit(1)
+		}
 	}
 }

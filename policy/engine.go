@@ -2,11 +2,11 @@ package policy
 
 import (
 	"fmt"
-	"path/filepath"
 	"strconv"
 	"strings"
 
 	"github.com/KTCrisis/agent-mesh/config"
+	"github.com/KTCrisis/agent-mesh/internal/match"
 )
 
 // Decision is the result of a policy evaluation.
@@ -61,26 +61,12 @@ func (e *Engine) Evaluate(agentID string, toolName string, params map[string]any
 	}
 }
 
-// matchAgent checks if agentID matches a pattern (supports * wildcard).
 func matchAgent(pattern, agentID string) bool {
-	if pattern == "*" {
-		return true
-	}
-	matched, _ := filepath.Match(pattern, agentID)
-	return matched
+	return match.Glob(pattern, agentID)
 }
 
-// matchTool checks if toolName is in the allowed tools list (supports glob patterns).
 func matchTool(tools []string, toolName string) bool {
-	for _, t := range tools {
-		if t == "*" || t == toolName {
-			return true
-		}
-		if matched, _ := filepath.Match(t, toolName); matched {
-			return true
-		}
-	}
-	return false
+	return match.GlobAny(tools, toolName)
 }
 
 // evaluateCondition checks a single condition against params.
