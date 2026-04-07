@@ -97,6 +97,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) handleToolCall(w http.ResponseWriter, r *http.Request) {
 	toolName := strings.TrimPrefix(r.URL.Path, "/tool/")
 	agentID := extractAgentID(r)
+	traceID := extractTraceID(r)
+	if traceID == "" {
+		traceID = trace.NewID()
+	}
 	start := time.Now()
 
 	// 1. Parse request body
@@ -120,6 +124,7 @@ func (h *Handler) handleToolCall(w http.ResponseWriter, r *http.Request) {
 		preDecision := h.Policy.Evaluate(agentID, toolName, req.Params)
 		if err := h.RateLimiter.Check(agentID, preDecision.Rule, toolName, paramsKey); err != nil {
 			entry := trace.Entry{
+				TraceID:    traceID,
 				AgentID:    agentID,
 				Tool:       toolName,
 				Params:     req.Params,
@@ -147,6 +152,7 @@ func (h *Handler) handleToolCall(w http.ResponseWriter, r *http.Request) {
 
 	if decision.Action == "deny" {
 		entry := trace.Entry{
+			TraceID:    traceID,
 			AgentID:    agentID,
 			Tool:       toolName,
 			Params:     req.Params,
@@ -179,6 +185,7 @@ func (h *Handler) handleToolCall(w http.ResponseWriter, r *http.Request) {
 		if h.Approvals == nil {
 			// Fallback: no approval store configured
 			entry := trace.Entry{
+				TraceID:    traceID,
 				AgentID:    agentID,
 				Tool:       toolName,
 				Params:     req.Params,
@@ -199,6 +206,7 @@ func (h *Handler) handleToolCall(w http.ResponseWriter, r *http.Request) {
 		pending := h.Approvals.Submit(agentID, toolName, decision.Rule, req.Params, callbackURL)
 
 		entry := trace.Entry{
+			TraceID:    traceID,
 			AgentID:    agentID,
 			Tool:       toolName,
 			Params:     req.Params,
@@ -226,7 +234,7 @@ func (h *Handler) handleToolCall(w http.ResponseWriter, r *http.Request) {
 			if h.RateLimiter != nil {
 				h.RateLimiter.Record(agentID, toolName, fmt.Sprintf("%v", req.Params))
 			}
-			result, statusCode, err := h.Forward(tool, req.Params)
+			result, statusCode, err := h.ForwardWithTrace(tool, req.Params, traceID)
 			totalMs := time.Since(start).Milliseconds()
 			h.Traces.Update(entry.TraceID, func(e *trace.Entry) {
 				e.StatusCode = statusCode
@@ -276,11 +284,12 @@ func (h *Handler) handleToolCall(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 6. Forward to backend
-	result, statusCode, err := h.Forward(tool, req.Params)
+	result, statusCode, err := h.ForwardWithTrace(tool, req.Params, traceID)
 	latency := time.Since(start).Milliseconds()
 
 	// 5. Trace
 	entry := trace.Entry{
+		TraceID:    traceID,
 		AgentID:    agentID,
 		Tool:       toolName,
 		Params:     req.Params,
@@ -309,16 +318,24 @@ func (h *Handler) handleToolCall(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, resp)
 }
 
+// ForwardWithTrace sends the request to the appropriate backend, propagating the trace ID.
+func (h *Handler) ForwardWithTrace(tool *registry.Tool, params map[string]any, traceID string) (any, int, error) {
+	if tool.Source == "mcp" {
+		return h.forwardMCP(tool, params)
+	}
+	return h.forwardHTTP(tool, params, traceID)
+}
+
 // Forward sends the request to the appropriate backend (HTTP or MCP).
 func (h *Handler) Forward(tool *registry.Tool, params map[string]any) (any, int, error) {
 	if tool.Source == "mcp" {
 		return h.forwardMCP(tool, params)
 	}
-	return h.forwardHTTP(tool, params)
+	return h.forwardHTTP(tool, params, "")
 }
 
 // forwardHTTP sends the request to a REST backend.
-func (h *Handler) forwardHTTP(tool *registry.Tool, params map[string]any) (any, int, error) {
+func (h *Handler) forwardHTTP(tool *registry.Tool, params map[string]any, traceID string) (any, int, error) {
 	// Build URL with path params (URL-encoded)
 	reqURL := tool.BaseURL + tool.Path
 	for k, v := range params {
@@ -359,6 +376,10 @@ func (h *Handler) forwardHTTP(tool *registry.Tool, params map[string]any) (any, 
 	}
 
 	req.Header.Set("Content-Type", "application/json")
+	if traceID != "" {
+		req.Header.Set("X-Trace-Id", traceID)
+		req.Header.Set("Traceparent", fmt.Sprintf("00-%s-0000000000000000-01", traceID))
+	}
 	for k, v := range tool.Headers {
 		req.Header.Set(k, v)
 	}
@@ -424,6 +445,24 @@ func (h *Handler) handleHealth(w http.ResponseWriter, _ *http.Request) {
 		"tools":  len(h.Registry.All()),
 		"traces": h.Traces.Stats(),
 	})
+}
+
+// extractTraceID reads a trace ID from incoming headers.
+// Supports W3C Traceparent (extracts trace-id field) and X-Trace-Id.
+// Returns empty string if none provided (trace store will generate one).
+func extractTraceID(r *http.Request) string {
+	// W3C Traceparent: "00-<trace-id>-<parent-id>-<flags>"
+	if tp := r.Header.Get("Traceparent"); tp != "" {
+		parts := strings.Split(tp, "-")
+		if len(parts) >= 2 && len(parts[1]) == 32 {
+			return parts[1]
+		}
+	}
+	// Fallback: X-Trace-Id header
+	if id := r.Header.Get("X-Trace-Id"); id != "" {
+		return id
+	}
+	return ""
 }
 
 // extractAgentID reads the agent ID from the Authorization header.
@@ -630,6 +669,10 @@ func (h *Handler) handleRevokeGrant(w http.ResponseWriter, r *http.Request) {
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
+	// Propagate trace ID in response header if present in body
+	if m, ok := v.(ToolCallResponse); ok && m.TraceID != "" {
+		w.Header().Set("X-Trace-Id", m.TraceID)
+	}
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(v)
 }

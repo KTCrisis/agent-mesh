@@ -96,7 +96,7 @@ func (s *Store) openFile() error {
 // Record adds a trace entry.
 func (s *Store) Record(e Entry) {
 	if e.TraceID == "" {
-		e.TraceID = newID()
+		e.TraceID = NewID()
 	}
 	if e.Timestamp.IsZero() {
 		e.Timestamp = time.Now().UTC()
@@ -277,8 +277,9 @@ func (s *Store) loadFromFile(path string) error {
 	return scanner.Err()
 }
 
-func newID() string {
-	b := make([]byte, 8)
+// NewID generates a random 16-byte trace ID (32 hex chars, W3C compatible).
+func NewID() string {
+	b := make([]byte, 16)
 	rand.Read(b)
 	return hex.EncodeToString(b)
 }

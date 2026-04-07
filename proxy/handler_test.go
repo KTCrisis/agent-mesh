@@ -289,6 +289,58 @@ func TestHandleTraces(t *testing.T) {
 	}
 }
 
+func TestTraceIDPropagation(t *testing.T) {
+	handler, _ := setupHandler(t)
+
+	t.Run("X-Trace-Id header is used", func(t *testing.T) {
+		req := httptest.NewRequest("POST", "/tool/get_pet", strings.NewReader(`{"params":{}}`))
+		req.Header.Set("Authorization", "Bearer test-agent")
+		req.Header.Set("X-Trace-Id", "abc123customtraceid")
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+
+		var resp ToolCallResponse
+		json.NewDecoder(w.Body).Decode(&resp)
+		if resp.TraceID != "abc123customtraceid" {
+			t.Errorf("trace_id = %q, want %q", resp.TraceID, "abc123customtraceid")
+		}
+		if got := w.Header().Get("X-Trace-Id"); got != "abc123customtraceid" {
+			t.Errorf("response X-Trace-Id = %q, want %q", got, "abc123customtraceid")
+		}
+	})
+
+	t.Run("W3C Traceparent is used", func(t *testing.T) {
+		traceID := "0af7651916cd43dd8448eb211c80319c"
+		req := httptest.NewRequest("POST", "/tool/get_pet", strings.NewReader(`{"params":{}}`))
+		req.Header.Set("Authorization", "Bearer test-agent")
+		req.Header.Set("Traceparent", "00-"+traceID+"-b7ad6b7169203331-01")
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+
+		var resp ToolCallResponse
+		json.NewDecoder(w.Body).Decode(&resp)
+		if resp.TraceID != traceID {
+			t.Errorf("trace_id = %q, want %q", resp.TraceID, traceID)
+		}
+	})
+
+	t.Run("auto-generated when no header", func(t *testing.T) {
+		req := httptest.NewRequest("POST", "/tool/get_pet", strings.NewReader(`{"params":{}}`))
+		req.Header.Set("Authorization", "Bearer test-agent")
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+
+		var resp ToolCallResponse
+		json.NewDecoder(w.Body).Decode(&resp)
+		if resp.TraceID == "" {
+			t.Error("trace_id should be auto-generated")
+		}
+		if len(resp.TraceID) != 32 {
+			t.Errorf("trace_id length = %d, want 32 (W3C compatible)", len(resp.TraceID))
+		}
+	})
+}
+
 func TestHandle404(t *testing.T) {
 	handler, _ := setupHandler(t)
 

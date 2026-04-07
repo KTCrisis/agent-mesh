@@ -93,32 +93,115 @@ User on Telegram
 
 A team could use Gravitee to govern LLM traffic, OpenClaw to serve agents on Slack, and Agent Mesh to enforce that agent-A can create issues but not delete repos — all in the same stack. They solve different problems at different layers.
 
-### Agent frameworks (LangChain, CrewAI) and governance toolkits
+### Agent frameworks and their built-in governance
 
-Agent frameworks orchestrate LLM workflows. Some have governance-adjacent features, but none provide a dedicated, cross-agent semantic governance layer.
+Agent frameworks orchestrate LLM workflows. Most now include governance-adjacent features — callbacks, guardrails, hooks — but all are **in-process middleware**, locked to their own ecosystem.
 
-| | **LangChain** | **CrewAI** | **Microsoft Agent Governance Toolkit** | **Agent Mesh** |
-|---|---|---|---|---|
-| **What it is** | Agent framework + LangSmith observability | Multi-agent orchestration framework | In-process policy engine (open-source, MIT) | Sidecar governance proxy |
-| **Governance model** | LangSmith Fleet: agent identity, permissions, sandboxes. Dynamic tool selection based on auth state | Task guardrails: validation checks after agent output | Agent OS: intercepts every action before execution, sub-ms latency. Zero-trust Ed25519 identity | Semantic policy-as-code: tool + parameters + conditions, per-agent identity |
-| **Scope** | LangChain agents only | CrewAI agents only | Framework-specific hooks (LangChain callbacks, CrewAI decorators, ADK plugins) | Any agent speaking MCP or HTTP — framework-agnostic |
-| **Policy definition** | Code (Python) | Code (Python decorators) | Code (Python/.NET) | YAML, git-versionable |
-| **Architecture** | In-process | In-process | In-process (middleware) | Out-of-process (sidecar proxy) |
-| **Cross-agent** | No — LangChain only | No — CrewAI only | Yes — across supported frameworks | Yes — any agent, any framework |
-| **Trace** | LangSmith (proprietary SaaS) | CrewAI logs | Built-in audit trail | Centralized trace, per agent + tool + params |
+| | **Anthropic (Agent SDK + Claude Code)** | **OpenAI Agents SDK** | **LangChain / LangGraph** | **Google ADK** | **CrewAI** | **HuggingFace smolagents** | **Amazon Bedrock** |
+|---|---|---|---|---|---|---|---|
+| **Governance model** | 18 lifecycle hooks, `can_use_tool`, deny-wins chaining. Claude Code: PreToolUse/PostToolUse shell hooks | Input/output/tool guardrails, fail-fast parallel execution | LangSmith Fleet: agent identity, ABAC, sandboxes. LangGraph 1.0: HITL middleware | 6 callbacks (before/after agent/model/tool) | Task guardrails: post-hoc validation after agent output | Sandbox (E2B/Docker) + basic HITL | 6 safeguards: content moderation, PII redaction, prompt attack detection, hallucination detection |
+| **Architecture** | In-process (middleware) | In-process (middleware) | In-process + SaaS (LangSmith) | In-process (middleware) | In-process (middleware) | In-process (sandbox) | Platform service (AWS-managed) |
+| **Scope** | Claude Agent SDK / Claude Code only | OpenAI SDK only | LangChain/LangGraph only | ADK only | CrewAI only | smolagents only | Bedrock only |
+| **Policy definition** | Code (Python/hooks) | Code (Python) | Code (Python) | Code (Python/TS) | Code (Python decorators) | Code (Python) | AWS Console / API |
+| **Cross-agent** | No | No | No | No | No | No | No |
+| **Trace** | SDK logs | OpenAI platform | LangSmith (proprietary SaaS) | Google Cloud Trace | CrewAI logs | Local logs | CloudWatch |
+
+**Key observations:**
+
+- **Every framework** now has some form of governance hooks. This validates the need — but each solution is **framework-locked**.
+- **Anthropic Agent SDK** has the richest hook system (18 lifecycle hooks, deny-wins), but only governs agents built with that SDK.
+- **OpenAI Agents SDK** runs guardrails in parallel with agent execution (fail-fast) — good UX, but OpenAI-only.
+- **Google ADK** callbacks are the subject of growing community adoption (cost/latency tracking via hooks), but ADK-only.
+- **CrewAI guardrails** are **post-hoc** — they validate output after the action, not before. Quality control, not governance.
+- **Amazon Bedrock** is the most comprehensive platform solution but is AWS-locked and focused on content-level guardrails (PII, toxicity), not semantic tool-call policy ("allow create_issue, deny delete_repo").
+- **None** provide cross-agent governance. If you run Claude Code + Cursor + a LangChain bot, no single framework sees all three.
+
+### Governance toolkits and standalone products
+
+Beyond framework-embedded hooks, a new category of **standalone governance tools** is emerging — some as middleware, some as external services, some as sidecars.
+
+| | **Microsoft AGT** | **Aegis** | **Galileo Agent Control** | **Cerbos** | **Agent Mesh** |
+|---|---|---|---|---|---|
+| **What it is** | 7-package middleware (Python/TS/Rust/Go/.NET) | Governance engine ("Istio + OPA for agents") | Open-source control plane (Apache 2.0) | Authorization engine (Go), expanded to AI/MCP | Sidecar governance proxy |
+| **Architecture** | In-process middleware (hooks into framework callbacks) | Sidecar / forward proxy (Envoy ext_authz + OPA) | External service (centralized policy evaluation) | Sidecar / standalone PDP | Out-of-process sidecar proxy |
+| **Policy model** | Code (Python/.NET), per-framework hooks | OPA policy bundles (Rego) | Declarative (deny/steer/warn/log/allow) | YAML (Cerbos policies) | YAML, first-match-wins, glob patterns |
+| **Agent identity** | Zero-trust Ed25519 | Per-agent via OPA context | Per-agent | Per-principal | Per-agent via Bearer token or MCP flag |
+| **Cross-agent** | Yes — across supported frameworks | Yes — protocol-level interception | Yes — vendor-neutral | Yes — any caller | Yes — any MCP or HTTP agent |
+| **Approval workflows** | No | Slack/Teams approval, one-time override tokens | No | No | Built-in (HTTP + MCP + webhooks + callbacks) |
+| **OWASP Agentic coverage** | 10/10 | Not specified | Not specified | Not specified | 6/10 |
+| **Deployment** | In-process (per framework) | Kubernetes sidecar | SaaS + self-hosted | K8s sidecar, standalone, Lambda | Single binary, local-first, zero deps |
+| **Best for** | Teams controlling agent code, wanting sub-ms latency | K8s-native teams, OPA shops | Enterprise multi-framework, centralized policy | Teams already using Cerbos for authz | Dev-first, heterogeneous agents, local + CI |
 
 **Key distinctions:**
 
-**LangChain** has real governance features (Fleet, sandboxes, dynamic tool selection) but they are **framework-locked**. If you run LangChain + Claude Code + Cursor, LangSmith only sees the LangChain agents.
+**Microsoft AGT** (April 2026) is the most comprehensive solution and covers all 10 OWASP Agentic risks. But it is **middleware** — it hooks into each framework's callbacks (LangChain, CrewAI, ADK, Semantic Kernel). If an agent doesn't have a supported hook, AGT can't govern it.
 
-**CrewAI guardrails** are **post-hoc validation** — they check the output after the agent acts, not before. This is quality control, not governance. You can't prevent a dangerous action; you can only reject its result.
+**Aegis** is the closest architectural match to Agent Mesh — sidecar proxy, protocol-level interception, "Istio + OPA for agents." The key differences: Aegis is **Kubernetes-oriented** (heavier infra), uses **OPA/Rego** for policy (steeper learning curve vs YAML), and has no built-in human approval workflow.
 
-**Microsoft Agent Governance Toolkit** (released April 2, 2026) is the closest comparable to Agent Mesh. The core difference is architectural:
+**Galileo Agent Control** (March 2026) takes a centralized control-plane approach with enterprise partnerships (CrewAI, Cisco, Strands). Vendor-neutral in theory, but still requires per-framework integration hooks for interception. Enterprise SaaS model behind the open-source layer.
 
-- **Microsoft AGT** = **middleware** — runs inside the agent's process, hooks into framework callbacks. Sub-millisecond latency, deep integration, but coupled to supported frameworks (LangChain, CrewAI, ADK, Semantic Kernel).
-- **Agent Mesh** = **sidecar proxy** — runs outside the agent's process, intercepts at protocol level. Works with any agent without code changes, but adds a network hop (even if local).
+**Cerbos** is a mature authorization engine that recently expanded to AI agent and MCP authorization. Strong as a policy decision point, but it's a **generic authz engine** — no agent-specific features like approval workflows, trace, or loop detection.
 
-This is the same distinction as Express middleware vs Envoy proxy. Both are valid. Microsoft AGT is better when you control the agent's code and want minimal latency. Agent Mesh is better when you have heterogeneous agents (CLI tools, custom bots, third-party frameworks) and need a single governance layer without modifying each one.
+**Agent Mesh** = **sidecar proxy** — runs outside the agent's process, intercepts at protocol level. Works with any agent without code changes, but adds a network hop (even if local). The unique combination: single binary + YAML policy + built-in approval/trace/rate-limiting + MCP-native + zero dependencies.
+
+### The middleware vs sidecar divide
+
+The governance landscape splits along the same architectural line as the service mesh world:
+
+| | **Middleware** (in-process) | **Sidecar** (out-of-process) |
+|---|---|---|
+| **Examples** | Microsoft AGT, all framework hooks | Agent Mesh, Aegis, Cerbos |
+| **Latency** | Sub-millisecond | Network hop (local: ~1ms) |
+| **Integration** | Code changes per framework | Zero code changes, protocol-level |
+| **Scope** | Supported frameworks only | Any agent speaking HTTP or MCP |
+| **Failure mode** | Crashes with the agent | Independent process, fail-closed |
+| **Best for** | Homogeneous fleet, controlled code | Heterogeneous agents, CLI tools, third-party |
+
+Microsoft AGT is better when you control the agent's code and want minimal latency. Agent Mesh is better when you have heterogeneous agents (CLI tools, custom bots, third-party frameworks) and need a single governance layer without modifying each one.
+
+## The adoption journey
+
+Most teams building agents today follow a predictable path. Governance needs emerge at each transition — and the right tool depends on the phase.
+
+### The three entry points
+
+**Agent CLIs** (Claude Code, Cursor, Gemini CLI) — A developer, one agent, their code. The dev approves everything manually. This is single-player mode and represents the vast majority of agent usage today.
+
+**Agent frameworks** (LangChain, CrewAI, Agent SDK) — A team building a custom agent that runs in production, calls APIs, performs actions on behalf of users. This is multi-agent or agent-as-service territory.
+
+**Cloud platforms** (Bedrock, Vertex AI) — Managed, cloud-native, governance built-in but vendor-locked. Enterprise teams start here.
+
+### When governance becomes a need
+
+```
+Phase 1: "I code with Claude Code"
+         → No governance needed — I'm right here approving everything
+
+Phase 2: "I have 2-3 agents (Claude Code + Cursor + a LangChain bot)"
+         → I want the same rules for all of them
+         → AGENT MESH enters here
+
+Phase 3: "My agent runs in prod without a human"
+         → I MUST have governance
+         → AGENT MESH, framework hooks, or AGT
+
+Phase 4: "I have 10 agents in prod, K8s, compliance requirements"
+         → Aegis, AGT, Bedrock Guardrails, or enterprise solutions
+```
+
+### Agent Mesh's sweet spot: Phase 1 → 2 → 3
+
+The critical moment is when a developer adds a second agent or lets the first one run autonomously. The scenarios:
+
+| Scenario | Without Agent Mesh | With Agent Mesh |
+|---|---|---|
+| Solo dev + Claude Code | Approval mode is enough | Not necessary |
+| Claude Code + Cursor on the same project | Each has its own rules, no unified view | 1 YAML, same rules, 1 trace |
+| LangChain bot running autonomously | Code Python guardrails inside the bot | Put the bot behind the mesh, YAML policy |
+| Agent SDK with human approval | Code the webhook yourself | Built-in (HTTP + MCP + webhooks) |
+| Multiple agents, different trust levels | Configure each one separately | One config, per-agent identity and permissions |
+
+The pattern: Agent Mesh is the thing you put in front of your agents in 5 minutes — before the lack of governance becomes a problem. It grows with you from local dev to production, without requiring a platform migration.
 
 ## The shared gap
 
