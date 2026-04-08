@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"os/exec"
 	"sync"
 )
@@ -19,8 +20,11 @@ type stdioTransport struct {
 
 func newStdioTransport(name, command string, args []string, env map[string]string) *stdioTransport {
 	cmd := exec.Command(command, args...)
-	for k, v := range env {
-		cmd.Env = append(cmd.Env, k+"="+v)
+	if len(env) > 0 {
+		cmd.Env = os.Environ()
+		for k, v := range env {
+			cmd.Env = append(cmd.Env, k+"="+v)
+		}
 	}
 	return &stdioTransport{name: name, cmd: cmd}
 }

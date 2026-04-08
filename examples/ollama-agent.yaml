@@ -1,0 +1,28 @@
+port: 9092
+trace_file: /home/fluxart/agent-mesh/traces-ollama.jsonl
+
+mcp_servers:
+  - name: ollama
+    transport: stdio
+    command: /home/fluxart/ollama-mcp-go/ollama-mcp-go
+
+policies:
+  - name: claude-code
+    agent: "claude"
+    rules:
+      # All ollama tools — generate, chat, embeddings, list, etc.
+      - tools: ["ollama.*"]
+        action: allow
+
+  - name: ollama-workers
+    agent: "ollama-*"
+    rules:
+      # Workers can use ollama tools too (for future supervisor pattern)
+      - tools: ["ollama.*"]
+        action: allow
+
+  - name: default
+    agent: "*"
+    rules:
+      - tools: ["*"]
+        action: deny
