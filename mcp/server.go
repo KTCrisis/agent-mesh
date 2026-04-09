@@ -62,12 +62,13 @@ type MCPProp struct {
 
 // Server runs the MCP stdio protocol.
 type Server struct {
-	Registry  *registry.Registry
-	Policy    *policy.Engine
-	Traces    *trace.Store
-	Approvals *approval.Store
-	Handler   *proxy.Handler
-	AgentID   string // agent ID for policy evaluation in MCP mode
+	Registry   *registry.Registry
+	Policy     *policy.Engine
+	Traces     *trace.Store
+	Approvals  *approval.Store
+	Handler    *proxy.Handler
+	MCPManager *Manager
+	AgentID    string // agent ID for policy evaluation in MCP mode
 }
 
 // Run starts the MCP server on stdin/stdout.
@@ -625,9 +626,10 @@ func (s *Server) handleCatalog(args map[string]any) (any, *rpcError) {
 		Action      string `json:"action"`
 	}
 	type catalogGroup struct {
-		Source string         `json:"source"`
-		Count  int            `json:"count"`
-		Tools  []catalogEntry `json:"tools"`
+		Source  string         `json:"source"`
+		Runtime string         `json:"runtime,omitempty"`
+		Count   int            `json:"count"`
+		Tools   []catalogEntry `json:"tools"`
 	}
 
 	groups := make(map[string]*catalogGroup)
@@ -680,6 +682,34 @@ func (s *Server) handleCatalog(args map[string]any) (any, *rpcError) {
 			{Name: "mesh.catalog", Description: "This tool", Action: "allow"},
 		}}
 		groups["mesh"] = g
+	}
+
+	// Enrich MCP groups with runtime info from manager
+	if s.MCPManager != nil {
+		for _, client := range s.MCPManager.All() {
+			g, ok := groups[client.Name]
+			if !ok {
+				continue
+			}
+			switch client.Transport {
+			case "stdio":
+				g.Runtime = client.Command + " " + strings.Join(client.Args, " ")
+			case "sse":
+				g.Runtime = client.URL
+			}
+		}
+	}
+
+	// Enrich CLI groups with binary path
+	for key, g := range groups {
+		if g.Source == "cli" && len(g.Tools) > 0 {
+			// Get CLIMeta from first tool in group
+			if t := s.Registry.Get(g.Tools[0].Name); t != nil && t.CLIMeta != nil {
+				g.Runtime = t.CLIMeta.Bin
+			} else if t := s.Registry.Get(key + ".__dispatch"); t != nil && t.CLIMeta != nil {
+				g.Runtime = t.CLIMeta.Bin
+			}
+		}
 	}
 
 	// Sort tools within each group, compute counts

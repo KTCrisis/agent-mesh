@@ -33,6 +33,9 @@ func (d *doneChan) Chan() <-chan struct{} {
 type MCPClient struct {
 	Name      string
 	Transport string // "stdio" or "sse"
+	Command   string // stdio: command (e.g. "npx", "/usr/bin/python")
+	Args      []string // stdio: args
+	URL       string // sse: endpoint URL
 
 	// transport layer
 	tr        transport
@@ -55,6 +58,8 @@ func NewStdioClient(name, command string, args []string, env map[string]string) 
 	return &MCPClient{
 		Name:      name,
 		Transport: "stdio",
+		Command:   command,
+		Args:      args,
 		tr:        factory(),
 		newTr:     factory,
 		pending:   make(map[int64]chan rpcResponse),
@@ -69,6 +74,7 @@ func NewSSEClient(name, sseURL string, headers map[string]string) *MCPClient {
 	return &MCPClient{
 		Name:      name,
 		Transport: "sse",
+		URL:       sseURL,
 		tr:        factory(),
 		newTr:     factory,
 		pending:   make(map[int64]chan rpcResponse),

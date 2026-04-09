@@ -201,12 +201,13 @@ func main() {
 		}()
 
 		server := &mcp.Server{
-			Registry:  reg,
-			Policy:    pol,
-			Traces:    traces,
-			Approvals: approvals,
-			Handler:   handler,
-			AgentID:   *mcpAgent,
+			Registry:   reg,
+			Policy:     pol,
+			Traces:     traces,
+			Approvals:  approvals,
+			Handler:    handler,
+			MCPManager: mcpManager,
+			AgentID:    *mcpAgent,
 		}
 		if err := server.Run(); err != nil {
 			slog.Error("MCP server failed", "error", err)
