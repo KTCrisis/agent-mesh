@@ -45,4 +45,4 @@ release:
   github:
     owner: KTCrisis
     name: agent-mesh
-  skip_upload: auto
+  replace_existing_artifacts: true
