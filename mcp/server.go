@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
@@ -223,6 +224,18 @@ func (s *Server) handleToolsList() map[string]any {
 		},
 	})
 
+	// Append virtual catalog tool
+	mcpTools = append(mcpTools, MCPTool{
+		Name:        "mesh.catalog",
+		Description: "List all available tools grouped by source/category, with policy actions for the current agent",
+		InputSchema: MCPSchema{
+			Type: "object",
+			Properties: map[string]MCPProp{
+				"source": {Type: "string", Description: "Filter by source name (e.g. 'filesystem', 'git', 'gmail'). Omit to show all."},
+			},
+		},
+	})
+
 	return map[string]any{"tools": mcpTools}
 }
 
@@ -246,6 +259,8 @@ func (s *Server) handleToolsCall(params map[string]any) (any, *rpcError) {
 		return s.handleGrantList()
 	case "grant.revoke":
 		return s.handleGrantRevoke(arguments)
+	case "mesh.catalog":
+		return s.handleCatalog(arguments)
 	}
 
 	// Look up tool (with CLI fallback for dynamic dispatch)
@@ -596,6 +611,107 @@ func (s *Server) handleGrantRevoke(args map[string]any) (any, *rpcError) {
 	return map[string]any{
 		"content": []map[string]any{
 			{"type": "text", "text": "Grant revoked: " + id},
+		},
+	}, nil
+}
+
+func (s *Server) handleCatalog(args map[string]any) (any, *rpcError) {
+	sourceFilter, _ := args["source"].(string)
+	sourceFilter = strings.ToLower(sourceFilter)
+
+	type catalogEntry struct {
+		Name        string `json:"name"`
+		Description string `json:"description"`
+		Action      string `json:"action"`
+	}
+	type catalogGroup struct {
+		Source string         `json:"source"`
+		Count  int            `json:"count"`
+		Tools  []catalogEntry `json:"tools"`
+	}
+
+	groups := make(map[string]*catalogGroup)
+
+	// Registry tools
+	for _, t := range s.Registry.All() {
+		var groupKey, sourceType string
+		switch t.Source {
+		case "mcp":
+			groupKey = t.MCPServer
+			sourceType = "mcp"
+		case "cli":
+			if i := strings.IndexByte(t.Name, '.'); i > 0 {
+				groupKey = t.Name[:i]
+			} else {
+				groupKey = t.Name
+			}
+			sourceType = "cli"
+		default:
+			groupKey = "openapi"
+			sourceType = "openapi"
+		}
+
+		if sourceFilter != "" && strings.ToLower(groupKey) != sourceFilter {
+			continue
+		}
+
+		action := s.Policy.Evaluate(s.AgentID, t.Name, nil).Action
+
+		g, ok := groups[groupKey]
+		if !ok {
+			g = &catalogGroup{Source: sourceType}
+			groups[groupKey] = g
+		}
+		g.Tools = append(g.Tools, catalogEntry{
+			Name:        t.Name,
+			Description: t.Description,
+			Action:      action,
+		})
+	}
+
+	// Virtual tools (mesh group)
+	if sourceFilter == "" || sourceFilter == "mesh" {
+		g := &catalogGroup{Source: "virtual", Tools: []catalogEntry{
+			{Name: "approval.resolve", Description: "Approve or deny a pending approval request", Action: "allow"},
+			{Name: "approval.pending", Description: "List all pending approval requests", Action: "allow"},
+			{Name: "grant.create", Description: "Create a temporal grant", Action: "allow"},
+			{Name: "grant.list", Description: "List all active temporal grants", Action: "allow"},
+			{Name: "grant.revoke", Description: "Revoke an active temporal grant", Action: "allow"},
+			{Name: "mesh.catalog", Description: "This tool", Action: "allow"},
+		}}
+		groups["mesh"] = g
+	}
+
+	// Sort tools within each group, compute counts
+	totalTools := 0
+	for _, g := range groups {
+		sort.Slice(g.Tools, func(i, j int) bool { return g.Tools[i].Name < g.Tools[j].Name })
+		g.Count = len(g.Tools)
+		totalTools += g.Count
+	}
+
+	// Sort group keys
+	keys := make([]string, 0, len(groups))
+	for k := range groups {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	// Build ordered output
+	orderedGroups := make(map[string]*catalogGroup, len(groups))
+	for _, k := range keys {
+		orderedGroups[k] = groups[k]
+	}
+
+	result := map[string]any{
+		"summary": fmt.Sprintf("%d tools across %d sources", totalTools, len(groups)),
+		"groups":  orderedGroups,
+	}
+
+	out, _ := json.MarshalIndent(result, "", "  ")
+	return map[string]any{
+		"content": []map[string]any{
+			{"type": "text", "text": string(out)},
 		},
 	}, nil
 }

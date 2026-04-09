@@ -118,9 +118,9 @@ func TestServerToolsList(t *testing.T) {
 
 	result, _ := responses[0].Result.(map[string]any)
 	tools, _ := result["tools"].([]any)
-	// 2 registry tools + 2 virtual approval tools + 3 virtual grant tools
-	if len(tools) != 7 {
-		t.Errorf("tools = %d, want 7", len(tools))
+	// 2 registry tools + 2 virtual approval tools + 3 virtual grant tools + 1 mesh.catalog
+	if len(tools) != 8 {
+		t.Errorf("tools = %d, want 8", len(tools))
 	}
 }
 
