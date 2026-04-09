@@ -13,6 +13,7 @@ import (
 
 	"github.com/KTCrisis/agent-mesh/approval"
 	"github.com/KTCrisis/agent-mesh/config"
+	meshexec "github.com/KTCrisis/agent-mesh/exec"
 	"github.com/KTCrisis/agent-mesh/grant"
 	"github.com/KTCrisis/agent-mesh/mcp"
 	"github.com/KTCrisis/agent-mesh/policy"
@@ -126,11 +127,28 @@ func main() {
 	grants := grant.NewStore()
 	slog.Info("grant store ready")
 
-	// 8. Build handler
+	// 8. Register CLI tools
+	if len(cfg.CLITools) > 0 {
+		reg.LoadCLI(cfg.CLITools)
+		for _, ct := range cfg.CLITools {
+			mode := "simple"
+			if ct.Strict {
+				mode = "strict"
+			} else if len(ct.Commands) > 0 {
+				mode = "fine-tuned"
+			}
+			slog.Info("CLI tool registered", "name", ct.Name, "bin", ct.Bin, "mode", mode, "commands", len(ct.Commands))
+		}
+	}
+
+	// 9. Build handler
 	handler := proxy.NewHandler(reg, pol, traces)
 	handler.Approvals = approvals
 	handler.RateLimiter = limiter
 	handler.Grants = grants
+	if len(cfg.CLITools) > 0 {
+		handler.CLIRunner = &meshexec.Runner{MaxOutputBytes: 1 << 20}
+	}
 
 	// 7. Connect upstream MCP servers
 	var mcpManager *mcp.Manager

@@ -1,7 +1,9 @@
 package config
 
 import (
+	"fmt"
 	"os"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -12,6 +14,24 @@ type Config struct {
 	Approval   ApprovalConfig    `yaml:"approval"`
 	Policies   []Policy          `yaml:"policies"`
 	MCPServers []MCPServerConfig `yaml:"mcp_servers"`
+	CLITools   []CLIToolConfig   `yaml:"cli_tools"`
+}
+
+// CLIToolConfig declares a CLI binary to wrap as governed tools.
+type CLIToolConfig struct {
+	Name          string                      `yaml:"name"`
+	Bin           string                      `yaml:"bin"`
+	DefaultAction string                      `yaml:"default_action"` // allow, deny, human_approval (default: deny)
+	Strict        bool                        `yaml:"strict"`         // only declared commands allowed
+	WorkingDir    string                      `yaml:"working_dir,omitempty"`
+	Env           map[string]string           `yaml:"env,omitempty"`
+	Commands      map[string]CLICommandConfig `yaml:"commands,omitempty"`
+}
+
+// CLICommandConfig declares a specific subcommand with constraints.
+type CLICommandConfig struct {
+	AllowedArgs []string `yaml:"allowed_args,omitempty"`
+	Timeout     string   `yaml:"timeout,omitempty"` // e.g. "30s", "5m"
 }
 
 // ApprovalConfig controls the human approval gate behavior.
@@ -71,5 +91,44 @@ func Load(path string) (*Config, error) {
 	if cfg.Approval.TimeoutSeconds == 0 {
 		cfg.Approval.TimeoutSeconds = 300
 	}
+	if err := cfg.validateCLITools(); err != nil {
+		return nil, err
+	}
 	return &cfg, nil
+}
+
+func (c *Config) validateCLITools() error {
+	seen := make(map[string]bool, len(c.CLITools))
+	for i, ct := range c.CLITools {
+		if ct.Name == "" {
+			return fmt.Errorf("cli_tools[%d]: name is required", i)
+		}
+		if ct.Bin == "" {
+			return fmt.Errorf("cli_tools[%d] (%s): bin is required", i, ct.Name)
+		}
+		if seen[ct.Name] {
+			return fmt.Errorf("cli_tools[%d]: duplicate name %q", i, ct.Name)
+		}
+		seen[ct.Name] = true
+
+		switch ct.DefaultAction {
+		case "", "allow", "deny", "human_approval":
+			// ok — empty defaults to "deny" at runtime
+		default:
+			return fmt.Errorf("cli_tools[%d] (%s): invalid default_action %q", i, ct.Name, ct.DefaultAction)
+		}
+
+		if ct.Strict && len(ct.Commands) == 0 {
+			return fmt.Errorf("cli_tools[%d] (%s): strict mode requires at least one declared command", i, ct.Name)
+		}
+
+		for cmdName, cmd := range ct.Commands {
+			if cmd.Timeout != "" {
+				if _, err := time.ParseDuration(cmd.Timeout); err != nil {
+					return fmt.Errorf("cli_tools[%d] (%s): command %q has invalid timeout %q: %w", i, ct.Name, cmdName, cmd.Timeout, err)
+				}
+			}
+		}
+	}
+	return nil
 }

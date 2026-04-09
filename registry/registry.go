@@ -1,18 +1,35 @@
 package registry
 
-import "sync"
+import (
+	"sync"
+	"time"
+)
 
-// Tool represents a callable operation discovered from an OpenAPI spec or MCP server.
+// Tool represents a callable operation discovered from an OpenAPI spec, MCP server, or CLI binary.
 type Tool struct {
 	Name        string            `json:"name"`
 	Description string            `json:"description"`
-	Method      string            `json:"method"`              // HTTP method (empty for MCP tools)
-	Path        string            `json:"path"`                // HTTP path (empty for MCP tools)
-	BaseURL     string            `json:"base_url"`            // backend URL (empty for MCP tools)
+	Method      string            `json:"method"`              // HTTP method (empty for MCP/CLI tools)
+	Path        string            `json:"path"`                // HTTP path (empty for MCP/CLI tools)
+	BaseURL     string            `json:"base_url"`            // backend URL (empty for MCP/CLI tools)
 	Params      []Param           `json:"params,omitempty"`
 	Headers     map[string]string `json:"-"`
-	Source      string            `json:"source"`              // "openapi" or "mcp"
+	Source      string            `json:"source"`              // "openapi", "mcp", or "cli"
 	MCPServer   string            `json:"mcp_server,omitempty"`
+	CLIMeta     *CLIToolMeta      `json:"cli_meta,omitempty"`  // CLI-specific metadata
+}
+
+// CLIToolMeta holds CLI-specific metadata attached to a Tool.
+type CLIToolMeta struct {
+	Bin           string            `json:"bin"`
+	Command       string            `json:"command"`                  // subcommand (e.g. "plan", "get")
+	AllowedArgs   []string          `json:"allowed_args,omitempty"`   // nil = any args
+	Timeout       time.Duration     `json:"timeout"`                  // 0 = default 30s
+	WorkingDir    string            `json:"working_dir,omitempty"`
+	Env           map[string]string `json:"env,omitempty"`
+	Strict        bool              `json:"strict"`
+	DefaultAction string            `json:"default_action"`
+	IsCatchAll    bool              `json:"is_catch_all"`             // true for dynamic dispatch
 }
 
 // Param describes a single parameter for a tool.

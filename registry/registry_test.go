@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+
+	"github.com/KTCrisis/agent-mesh/config"
 )
 
 func TestNewRegistry(t *testing.T) {
@@ -226,5 +228,139 @@ func TestConcurrentMCPLoadRemove(t *testing.T) {
 
 	if len(r.All()) != 0 {
 		t.Errorf("tools = %d, want 0 after removing all servers", len(r.All()))
+	}
+}
+
+func TestLoadCLI_SimpleMode(t *testing.T) {
+	r := New()
+	r.LoadCLI([]config.CLIToolConfig{
+		{Name: "gh", Bin: "gh", DefaultAction: "allow"},
+	})
+
+	// Should register catch-all dispatcher
+	dispatch := r.Get("gh.__dispatch")
+	if dispatch == nil {
+		t.Fatal("expected gh.__dispatch tool")
+	}
+	if dispatch.Source != "cli" {
+		t.Errorf("source = %q, want cli", dispatch.Source)
+	}
+	if dispatch.CLIMeta == nil || !dispatch.CLIMeta.IsCatchAll {
+		t.Error("expected catch-all meta")
+	}
+}
+
+func TestLoadCLI_FineTunedMode(t *testing.T) {
+	r := New()
+	r.LoadCLI([]config.CLIToolConfig{
+		{
+			Name:          "terraform",
+			Bin:           "terraform",
+			DefaultAction: "human_approval",
+			Commands: map[string]config.CLICommandConfig{
+				"plan":  {Timeout: "120s"},
+				"apply": {AllowedArgs: []string{"-target"}, Timeout: "300s"},
+			},
+		},
+	})
+
+	// Declared commands should be registered
+	plan := r.Get("terraform.plan")
+	if plan == nil {
+		t.Fatal("expected terraform.plan")
+	}
+	if plan.CLIMeta.Command != "plan" {
+		t.Errorf("command = %q, want plan", plan.CLIMeta.Command)
+	}
+
+	apply := r.Get("terraform.apply")
+	if apply == nil {
+		t.Fatal("expected terraform.apply")
+	}
+	if len(apply.CLIMeta.AllowedArgs) != 1 || apply.CLIMeta.AllowedArgs[0] != "-target" {
+		t.Errorf("allowed_args = %v", apply.CLIMeta.AllowedArgs)
+	}
+
+	// Catch-all should also exist (not strict)
+	if r.Get("terraform.__dispatch") == nil {
+		t.Error("expected terraform.__dispatch for non-strict mode")
+	}
+}
+
+func TestLoadCLI_StrictMode(t *testing.T) {
+	r := New()
+	r.LoadCLI([]config.CLIToolConfig{
+		{
+			Name:   "kubectl",
+			Bin:    "kubectl",
+			Strict: true,
+			Commands: map[string]config.CLICommandConfig{
+				"get": {AllowedArgs: []string{"-n", "--namespace"}},
+			},
+		},
+	})
+
+	// Declared command should exist
+	if r.Get("kubectl.get") == nil {
+		t.Fatal("expected kubectl.get")
+	}
+
+	// No catch-all in strict mode
+	if r.Get("kubectl.__dispatch") != nil {
+		t.Error("strict mode should NOT have __dispatch")
+	}
+}
+
+func TestResolveCLI_ExactMatch(t *testing.T) {
+	r := New()
+	r.LoadCLI([]config.CLIToolConfig{
+		{
+			Name:          "terraform",
+			Bin:           "terraform",
+			DefaultAction: "allow",
+			Commands: map[string]config.CLICommandConfig{
+				"plan": {},
+			},
+		},
+	})
+
+	// Exact match
+	tool := r.ResolveCLI("terraform.plan")
+	if tool == nil {
+		t.Fatal("expected exact match for terraform.plan")
+	}
+	if tool.CLIMeta.Command != "plan" {
+		t.Errorf("command = %q", tool.CLIMeta.Command)
+	}
+}
+
+func TestResolveCLI_FallbackDispatch(t *testing.T) {
+	r := New()
+	r.LoadCLI([]config.CLIToolConfig{
+		{Name: "terraform", Bin: "terraform", DefaultAction: "allow"},
+	})
+
+	// "terraform.init" doesn't exist, should fallback to terraform.__dispatch
+	tool := r.ResolveCLI("terraform.init")
+	if tool == nil {
+		t.Fatal("expected fallback to __dispatch")
+	}
+	if !tool.CLIMeta.IsCatchAll {
+		t.Error("expected catch-all tool")
+	}
+}
+
+func TestResolveCLI_StrictNoFallback(t *testing.T) {
+	r := New()
+	r.LoadCLI([]config.CLIToolConfig{
+		{
+			Name: "kubectl", Bin: "kubectl", Strict: true,
+			Commands: map[string]config.CLICommandConfig{"get": {}},
+		},
+	})
+
+	// "kubectl.exec" should return nil in strict mode (no __dispatch)
+	if r.ResolveCLI("kubectl.exec") != nil {
+		t.Error("strict mode should not resolve undeclared commands")
 	}
 }

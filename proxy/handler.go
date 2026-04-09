@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/KTCrisis/agent-mesh/approval"
+	meshexec "github.com/KTCrisis/agent-mesh/exec"
 	"github.com/KTCrisis/agent-mesh/grant"
 	"github.com/KTCrisis/agent-mesh/policy"
 	"github.com/KTCrisis/agent-mesh/ratelimit"
@@ -51,6 +52,7 @@ type Handler struct {
 	Grants       *grant.Store
 	Client       *http.Client
 	MCPForwarder MCPForwarder
+	CLIRunner    *meshexec.Runner
 }
 
 func NewHandler(reg *registry.Registry, pol *policy.Engine, traces *trace.Store) *Handler {
@@ -110,8 +112,11 @@ func (h *Handler) handleToolCall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 2. Look up tool in registry
+	// 2. Look up tool in registry (with CLI fallback for dynamic dispatch)
 	tool := h.Registry.Get(toolName)
+	if tool == nil {
+		tool = h.Registry.ResolveCLI(toolName)
+	}
 	if tool == nil {
 		writeJSON(w, 404, ToolCallResponse{Error: fmt.Sprintf("unknown tool: %s", toolName), Policy: "error"})
 		return
@@ -318,13 +323,17 @@ func (h *Handler) handleToolCall(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, resp)
 }
 
-// Forward sends the request to the appropriate backend (HTTP or MCP).
+// Forward sends the request to the appropriate backend (HTTP, MCP, or CLI).
 // traceID is propagated to HTTP backends via Traceparent and X-Trace-Id headers.
 func (h *Handler) Forward(tool *registry.Tool, params map[string]any, traceID string) (any, int, error) {
-	if tool.Source == "mcp" {
+	switch tool.Source {
+	case "mcp":
 		return h.forwardMCP(tool, params)
+	case "cli":
+		return h.forwardCLI(tool, params)
+	default:
+		return h.forwardHTTP(tool, params, traceID)
 	}
-	return h.forwardHTTP(tool, params, traceID)
 }
 
 // forwardHTTP sends the request to a REST backend.
@@ -412,6 +421,35 @@ func (h *Handler) forwardMCP(tool *registry.Tool, params map[string]any) (any, i
 		return nil, 502, err
 	}
 	return result, 200, nil
+}
+
+// forwardCLI executes a CLI command and returns the result.
+func (h *Handler) forwardCLI(tool *registry.Tool, params map[string]any) (any, int, error) {
+	if h.CLIRunner == nil {
+		return nil, 0, fmt.Errorf("no CLI runner configured")
+	}
+	meta := tool.CLIMeta
+	if meta == nil {
+		return nil, 0, fmt.Errorf("tool %s has no CLI metadata", tool.Name)
+	}
+
+	command, args := meshexec.ExtractCommand(params, meta)
+
+	ctx := context.Background()
+	result, err := h.CLIRunner.Run(ctx, meta, command, args)
+	if err != nil {
+		statusCode := 500
+		if result != nil && result.ExitCode != 0 {
+			statusCode = 422
+		}
+		return result, statusCode, err
+	}
+
+	statusCode := 200
+	if result.ExitCode != 0 {
+		statusCode = 422
+	}
+	return result, statusCode, nil
 }
 
 func (h *Handler) handleListTools(w http.ResponseWriter, _ *http.Request) {

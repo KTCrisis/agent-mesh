@@ -24,6 +24,9 @@ type Entry struct {
 	Error      string         `json:"error,omitempty"`
 	Timestamp  time.Time      `json:"timestamp"`
 
+	// CLI fields (populated when source = cli)
+	ExitCode *int `json:"exit_code,omitempty"`
+
 	// Approval fields (populated when policy = human_approval)
 	ApprovalID     string `json:"approval_id,omitempty"`
 	ApprovalStatus string `json:"approval_status,omitempty"` // approved, denied, timeout

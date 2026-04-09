@@ -1,0 +1,51 @@
+port: 9090
+trace_file: traces.jsonl
+
+cli_tools:
+  # Simple mode: all subcommands allowed, default_action applies to everything
+  - name: gh
+    bin: gh
+    default_action: allow
+
+  # Fine-tuned mode: specific commands with overrides, unlisted fall to default_action
+  - name: terraform
+    bin: terraform
+    working_dir: /home/user/infra
+    default_action: human_approval
+    env:
+      TF_IN_AUTOMATION: "1"
+    commands:
+      plan:
+        timeout: 120s
+      apply:
+        allowed_args: ["-target"]
+        timeout: 300s
+      destroy:
+        allowed_args: ["-target"]
+        timeout: 300s
+
+  # Strict mode: only declared commands are allowed, everything else is denied
+  - name: kubectl
+    bin: kubectl
+    strict: true
+    commands:
+      get:
+        allowed_args: ["-n", "--namespace", "-o", "--output"]
+      apply:
+        allowed_args: ["-f", "-n", "--namespace"]
+      delete:
+        allowed_args: ["-n", "--namespace"]
+
+policies:
+  - name: cli-governance
+    agent: "*"
+    rules:
+      # Policy overrides always take precedence over default_action
+      - tools: ["terraform.destroy"]
+        action: deny
+      - tools: ["terraform.plan"]
+        action: allow
+      - tools: ["kubectl.delete*"]
+        action: human_approval
+      - tools: ["gh.*"]
+        action: allow

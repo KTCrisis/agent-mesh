@@ -5,7 +5,7 @@ An open-source sidecar proxy that sits between AI agents and their tools — add
 
 One binary. One YAML config. Fail closed by default.
 
-Works with Claude Code, Cursor, LangChain, CrewAI, or any agent that uses HTTP or MCP.
+Works with Claude Code, Cursor, LangChain, CrewAI, or any agent that uses HTTP, MCP, or CLI tools.
 
 ## Architecture
 
@@ -34,6 +34,9 @@ Works with Claude Code, Cursor, LangChain, CrewAI, or any agent that uses HTTP o
                     │  - OpenAPI spec   - MCP server (stdio)   │
                     │  - MCP servers    - HTTP proxy (:port)   │
                     │    (stdio + SSE)                          │
+                    │  - CLI tools                              │
+                    │    (terraform,                            │
+                    │     kubectl, ...)                         │
                     └──────────────────────────────────────────┘
 ```
 
@@ -47,7 +50,7 @@ Agent calls tool
   → Rate limit check (calls/min, total budget, loop detection)
   → Look up tool in registry
   → Evaluate policy (allow / deny / human_approval)
-  → Forward to upstream backend (HTTP or MCP)
+  → Forward to upstream backend (HTTP, MCP, or CLI)
   → Record trace (agent, tool, params, decision, latency)
   → Return response
 ```
@@ -299,6 +302,42 @@ curl -X DELETE http://localhost:9090/grants/a1b2c3d4
 
 Grants expire automatically. No config change needed. Every call that uses a grant is traced with the grant ID.
 
+### CLI tool governance
+
+Wrap any CLI binary (terraform, kubectl, docker, gh, aws…) behind policy, approval, and tracing. Three modes:
+
+```yaml
+cli_tools:
+  # Simple — all subcommands, default_action applies
+  - name: gh
+    bin: gh
+    default_action: allow
+
+  # Fine-tuned — specific commands with overrides
+  - name: terraform
+    bin: terraform
+    default_action: human_approval
+    commands:
+      plan:
+        timeout: 120s
+      apply:
+        allowed_args: ["-target"]
+
+  # Strict — only declared commands, everything else denied
+  - name: kubectl
+    bin: kubectl
+    strict: true
+    commands:
+      get:
+        allowed_args: ["-n", "--namespace", "-o", "--output"]
+```
+
+Security: no shell execution (`exec.Command()` directly), argument allowlists, metacharacter rejection, timeout enforcement, env isolation, output cap (1MB).
+
+Agents call CLI tools like any other MCP tool — `terraform.plan`, `kubectl.get`, `gh.pr.list`. Same policy rules, same approval flow, same traces.
+
+See [docs/cli-tools.md](docs/cli-tools.md) for full documentation.
+
 ### Tracing
 
 Every tool call is logged with agent, tool, params, policy decision, latency, and approval metadata.
@@ -476,7 +515,10 @@ agent-mesh/
 ├── registry/
 │   ├── registry.go        # Tool/Param types, Registry (Get/All/Remove)
 │   ├── openapi.go         # Import OpenAPI → tool catalog
-│   └── mcp.go             # Import MCP → tool catalog
+│   ├── mcp.go             # Import MCP → tool catalog
+│   └── cli.go             # Import CLI tools → tool catalog
+├── exec/
+│   └── runner.go          # Secure CLI execution (no shell, arg validation, timeout)
 ├── policy/
 │   └── engine.go          # Rule evaluation engine (glob patterns, conditions)
 ├── grant/
@@ -499,7 +541,8 @@ agent-mesh/
 ├── examples/              # Example config files
 │   ├── filesystem.yaml    # Filesystem governance (read/write/deny)
 │   ├── petstore.yaml      # OpenAPI import demo (Petstore)
-│   └── travel-agent.yaml  # Multi-tool travel agent
+│   ├── travel-agent.yaml  # Multi-tool travel agent
+│   └── cli-tools/         # CLI tool governance (terraform, kubectl, gh)
 └── docs/
     ├── agent-landscape.md # AI agent CLI landscape survey
     └── positioning.md     # Market positioning and comparisons
@@ -513,14 +556,15 @@ go test ./... -race        # With race detector
 go test ./proxy/ -v        # One package
 ```
 
-128 tests across 10 packages:
+158 tests across 11 packages:
 
 | Package | Tests | Covers |
 |---------|-------|--------|
-| `config` | 5 | YAML parsing, defaults, MCP servers, conditions |
-| `registry` | 10 | CRUD, loading, namespacing, concurrent access |
+| `config` | 12 | YAML parsing, defaults, MCP servers, conditions, CLI tools validation |
+| `registry` | 17 | CRUD, loading, namespacing, concurrent access, CLI modes, ResolveCLI |
 | `policy` | 9 | Allow/deny, conditions, wildcards, globs, fail-closed |
-| `proxy` | 17 | REST and MCP calls, deny/approval flows, URL encoding |
+| `proxy` | 17 | REST, MCP, and CLI calls, deny/approval flows, URL encoding |
+| `exec` | 17 | Arg validation, shell injection, timeout, output cap, env isolation |
 | `grant` | 8 | Create, check, revoke, expiration, cleanup, glob matching |
 | `ratelimit` | 8 | Per-minute, total budget, loop detection, agent isolation |
 | `trace` | 11 | Record, filter, eviction, stats, JSONL persistence |
@@ -540,6 +584,7 @@ go test ./proxy/ -v        # One package
 - [x] Rate limiting per agent (sliding window + total budget + loop detection)
 - [x] Temporal grants (sudo for agents — `grant.create` MCP tool + HTTP API)
 - [x] Async approval (202 + poll via MCP virtual tools, HTTP API)
+- [x] CLI tool governance (terraform, kubectl, etc. — 3 modes, arg validation, secure exec)
 - [ ] Supervisor agent protocol
 - [ ] OpenTelemetry trace export
 - [ ] Dashboard UI

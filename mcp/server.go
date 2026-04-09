@@ -248,8 +248,11 @@ func (s *Server) handleToolsCall(params map[string]any) (any, *rpcError) {
 		return s.handleGrantRevoke(arguments)
 	}
 
-	// Look up tool
+	// Look up tool (with CLI fallback for dynamic dispatch)
 	tool := s.Registry.Get(toolName)
+	if tool == nil {
+		tool = s.Registry.ResolveCLI(toolName)
+	}
 	if tool == nil {
 		return nil, &rpcError{Code: -32602, Message: fmt.Sprintf("Unknown tool: %s", toolName)}
 	}

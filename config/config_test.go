@@ -167,6 +167,116 @@ policies: []
 	}
 }
 
+func TestLoadCLITools(t *testing.T) {
+	yaml := `
+policies: []
+cli_tools:
+  - name: terraform
+    bin: terraform
+    default_action: human_approval
+    commands:
+      plan:
+        timeout: 120s
+      apply:
+        allowed_args: ["-target"]
+        timeout: 300s
+  - name: kubectl
+    bin: kubectl
+    strict: true
+    commands:
+      get:
+        allowed_args: ["-n", "--namespace"]
+`
+	f := writeTempFile(t, yaml)
+	cfg, err := Load(f)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.CLITools) != 2 {
+		t.Fatalf("cli_tools = %d, want 2", len(cfg.CLITools))
+	}
+	tf := cfg.CLITools[0]
+	if tf.Name != "terraform" {
+		t.Errorf("name = %q, want terraform", tf.Name)
+	}
+	if tf.DefaultAction != "human_approval" {
+		t.Errorf("default_action = %q", tf.DefaultAction)
+	}
+	if len(tf.Commands) != 2 {
+		t.Errorf("commands = %d, want 2", len(tf.Commands))
+	}
+	if tf.Commands["apply"].Timeout != "300s" {
+		t.Errorf("apply timeout = %q", tf.Commands["apply"].Timeout)
+	}
+}
+
+func TestLoadCLIToolsValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		yaml    string
+		wantErr bool
+	}{
+		{"missing name", `
+policies: []
+cli_tools:
+  - bin: terraform
+`, true},
+		{"missing bin", `
+policies: []
+cli_tools:
+  - name: terraform
+`, true},
+		{"duplicate name", `
+policies: []
+cli_tools:
+  - name: tf
+    bin: terraform
+  - name: tf
+    bin: terraform
+`, true},
+		{"invalid default_action", `
+policies: []
+cli_tools:
+  - name: terraform
+    bin: terraform
+    default_action: maybe
+`, true},
+		{"strict without commands", `
+policies: []
+cli_tools:
+  - name: kubectl
+    bin: kubectl
+    strict: true
+`, true},
+		{"invalid timeout", `
+policies: []
+cli_tools:
+  - name: terraform
+    bin: terraform
+    commands:
+      plan:
+        timeout: notaduration
+`, true},
+		{"valid simple mode", `
+policies: []
+cli_tools:
+  - name: gh
+    bin: gh
+    default_action: allow
+`, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := writeTempFile(t, tt.yaml)
+			_, err := Load(f)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Load() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestLoadFileNotFound(t *testing.T) {
 	_, err := Load("/nonexistent/path.yaml")
 	if err == nil {
