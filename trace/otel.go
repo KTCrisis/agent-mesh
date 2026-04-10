@@ -151,8 +151,13 @@ func (e *OTELExporter) toOTLP(entry Entry) otlpExport {
 	endTime := entry.Timestamp
 	startTime := endTime.Add(-time.Duration(entry.LatencyMs) * time.Millisecond)
 
-	// Pad or truncate trace ID to 32 hex chars (16 bytes)
-	traceID := padHex(entry.TraceID, 32)
+	// Trace ID must be exactly 32 hex chars (16 bytes) per W3C.
+	// NewID() already produces this; if the entry ID is malformed, generate a fresh one
+	// rather than zero-padding (which destroys entropy and corrupts trace correlation).
+	traceID := entry.TraceID
+	if len(traceID) != 32 || !isHex(traceID) {
+		traceID = randomTraceID()
+	}
 	// Span ID: 8 random bytes (16 hex chars) per OTEL spec
 	spanID := randomSpanID()
 
@@ -253,18 +258,25 @@ func (e *OTELExporter) Close() error {
 func randomSpanID() string {
 	var b [8]byte
 	if _, err := rand.Read(b[:]); err != nil {
-		return padHex(fmt.Sprintf("%x", time.Now().UnixNano()), 16)
+		return fmt.Sprintf("%016x", time.Now().UnixNano())
 	}
 	return hex.EncodeToString(b[:])
 }
 
-// padHex pads or truncates a hex string to exactly n chars.
-func padHex(s string, n int) string {
-	if len(s) >= n {
-		return s[:n]
+// randomTraceID returns 16 random bytes as a 32-char hex string.
+func randomTraceID() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return fmt.Sprintf("%032x", time.Now().UnixNano())
 	}
-	for len(s) < n {
-		s += "0"
+	return hex.EncodeToString(b[:])
+}
+
+func isHex(s string) bool {
+	for _, c := range s {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return false
+		}
 	}
-	return s
+	return true
 }

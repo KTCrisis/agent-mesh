@@ -518,11 +518,20 @@ func extractTraceID(r *http.Request) string {
 			return parts[1]
 		}
 	}
-	// Fallback: X-Trace-Id header
-	if id := r.Header.Get("X-Trace-Id"); id != "" {
+	// Fallback: X-Trace-Id header (must be 32 hex chars per W3C)
+	if id := r.Header.Get("X-Trace-Id"); len(id) == 32 && isHexString(id) {
 		return id
 	}
 	return ""
+}
+
+func isHexString(s string) bool {
+	for _, c := range s {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return false
+		}
+	}
+	return true
 }
 
 // extractAgentID reads the agent ID from the Authorization header.

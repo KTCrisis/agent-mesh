@@ -296,17 +296,17 @@ func TestTraceIDPropagation(t *testing.T) {
 	t.Run("X-Trace-Id header is used", func(t *testing.T) {
 		req := httptest.NewRequest("POST", "/tool/get_pet", strings.NewReader(`{"params":{}}`))
 		req.Header.Set("Authorization", "Bearer test-agent")
-		req.Header.Set("X-Trace-Id", "abc123customtraceid")
+		req.Header.Set("X-Trace-Id", "abc1230000000000a4aff75f4f850582")
 		w := httptest.NewRecorder()
 		handler.ServeHTTP(w, req)
 
 		var resp ToolCallResponse
 		json.NewDecoder(w.Body).Decode(&resp)
-		if resp.TraceID != "abc123customtraceid" {
-			t.Errorf("trace_id = %q, want %q", resp.TraceID, "abc123customtraceid")
+		if resp.TraceID != "abc1230000000000a4aff75f4f850582" {
+			t.Errorf("trace_id = %q, want %q", resp.TraceID, "abc1230000000000a4aff75f4f850582")
 		}
-		if got := w.Header().Get("X-Trace-Id"); got != "abc123customtraceid" {
-			t.Errorf("response X-Trace-Id = %q, want %q", got, "abc123customtraceid")
+		if got := w.Header().Get("X-Trace-Id"); got != "abc1230000000000a4aff75f4f850582" {
+			t.Errorf("response X-Trace-Id = %q, want %q", got, "abc1230000000000a4aff75f4f850582")
 		}
 	})
 
