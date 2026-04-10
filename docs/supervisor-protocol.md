@@ -381,3 +381,24 @@ GET /approvals?status=pending&tool=gmail.*
 ```
 
 Domain-specific supervision improves judgment quality: the filesystem supervisor understands code patterns, the gmail supervisor understands communication norms.
+
+## Reference implementation
+
+A complete supervisor implementation is available in the [agent7](https://github.com/KTCrisis/agent7) repository at `backend/app/services/supervisor/`.
+
+### Features
+
+- **Rule engine** — first-match-wins rules with a simple DSL (`starts_with`, `equals`, `contains`). Fast path for known patterns (0ms).
+- **LLM fallback** — when no rule matches, calls Ollama for evaluation (~20s). Configurable model, system prompt, and confidence threshold.
+- **Process manager** — auto-spawns agent-mesh when it's down, monitors health, restarts on crash.
+- **Memory integration** — stores decisions in memory-mcp (via agent-mesh), recalls them on startup for context continuity across sessions.
+- **JSONL audit trail** — every decision logged with reasoning, confidence, rule matched, and evaluation time.
+
+### Quick start
+
+```bash
+cd ~/agent7
+python -m backend.app.services.supervisor --config supervisor.yaml
+```
+
+See [docs/deployment-modes.md](deployment-modes.md) for full setup options.
