@@ -207,6 +207,38 @@ func (e *OTELExporter) toOTLP(entry Entry) otlpExport {
 	}
 }
 
+// EntriesToOTLP converts a batch of trace entries into a single OTLP export.
+// Useful for HTTP endpoints that serve trace history in OTLP format on demand,
+// without requiring a configured OTEL endpoint.
+func EntriesToOTLP(entries []Entry, service string) any {
+	if service == "" {
+		service = "agent-mesh"
+	}
+	exp := &OTELExporter{service: service}
+
+	spans := make([]otlpSpan, 0, len(entries))
+	for _, e := range entries {
+		otlp := exp.toOTLP(e)
+		if len(otlp.ResourceSpans) > 0 && len(otlp.ResourceSpans[0].ScopeSpans) > 0 {
+			spans = append(spans, otlp.ResourceSpans[0].ScopeSpans[0].Spans...)
+		}
+	}
+
+	return otlpExport{
+		ResourceSpans: []otlpResourceSpan{{
+			Resource: otlpResource{
+				Attributes: []otlpKV{
+					{Key: "service.name", Value: strVal(service)},
+				},
+			},
+			ScopeSpans: []otlpScopeSpan{{
+				Scope: otlpScope{Name: "agent-mesh", Version: "0.6.0"},
+				Spans: spans,
+			}},
+		}},
+	}
+}
+
 // Close flushes and closes the OTEL file if any.
 func (e *OTELExporter) Close() error {
 	if e.file != nil {

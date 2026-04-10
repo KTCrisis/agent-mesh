@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -77,6 +78,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleListTools(w, r)
 	case r.Method == "GET" && r.URL.Path == "/traces":
 		h.handleTraces(w, r)
+	case r.Method == "GET" && r.URL.Path == "/otel-traces":
+		h.handleOTELTraces(w, r)
 	case r.Method == "GET" && r.URL.Path == "/mcp-servers":
 		h.handleMCPServers(w, r)
 	case r.Method == "GET" && r.URL.Path == "/approvals":
@@ -470,6 +473,22 @@ func (h *Handler) handleTraces(w http.ResponseWriter, r *http.Request) {
 	agent := r.URL.Query().Get("agent")
 	tool := r.URL.Query().Get("tool")
 	writeJSON(w, 200, h.Traces.Query(agent, tool, 100))
+}
+
+// handleOTELTraces returns recent trace entries converted to OTLP JSON format.
+// Query params: agent, tool, limit (default 200).
+// Returns a single resourceSpans payload compatible with OTLP consumers.
+func (h *Handler) handleOTELTraces(w http.ResponseWriter, r *http.Request) {
+	agent := r.URL.Query().Get("agent")
+	tool := r.URL.Query().Get("tool")
+	limit := 200
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if n, err := strconv.Atoi(l); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	entries := h.Traces.Query(agent, tool, limit)
+	writeJSON(w, 200, trace.EntriesToOTLP(entries, "agent-mesh"))
 }
 
 func (h *Handler) handleMCPServers(w http.ResponseWriter, _ *http.Request) {

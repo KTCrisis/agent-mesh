@@ -242,6 +242,7 @@ func main() {
 			"approvals", fmt.Sprintf("GET  http://localhost%s/approvals", addr),
 			"mcp_servers", fmt.Sprintf("GET  http://localhost%s/mcp-servers", addr),
 			"traces", fmt.Sprintf("GET  http://localhost%s/traces", addr),
+			"otel_traces", fmt.Sprintf("GET  http://localhost%s/otel-traces", addr),
 			"health", fmt.Sprintf("GET  http://localhost%s/health", addr),
 		)
 
