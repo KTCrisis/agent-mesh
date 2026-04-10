@@ -244,6 +244,7 @@ func (s *Server) handleToolsList() map[string]any {
 }
 
 func (s *Server) handleToolsCall(params map[string]any) (any, *rpcError) {
+	start := time.Now()
 	toolName, _ := params["name"].(string)
 	arguments, _ := params["arguments"].(map[string]any)
 
@@ -296,6 +297,7 @@ func (s *Server) handleToolsCall(params map[string]any) (any, *rpcError) {
 			Params:     arguments,
 			Policy:     "deny",
 			PolicyRule: decision.Rule,
+			LatencyMs:  time.Since(start).Milliseconds(),
 		})
 		return map[string]any{
 			"content": []map[string]any{
@@ -326,10 +328,12 @@ func (s *Server) handleToolsCall(params map[string]any) (any, *rpcError) {
 				})
 
 				result, statusCode, err := s.Handler.Forward(tool, arguments, "")
+				inTok, outTok := resolveMCPTokens(toolName, arguments, result)
 				s.Traces.Update(entry.TraceID, func(e *trace.Entry) {
 					e.StatusCode = statusCode
-					e.EstimatedInputTokens = trace.EstimateTokens(arguments)
-					e.EstimatedOutputTokens = trace.EstimateTokens(result)
+					e.LatencyMs = time.Since(start).Milliseconds()
+					e.EstimatedInputTokens = inTok
+					e.EstimatedOutputTokens = outTok
 					if err != nil {
 						e.Error = err.Error()
 					}
@@ -404,6 +408,7 @@ func (s *Server) handleToolsCall(params map[string]any) (any, *rpcError) {
 
 	// Forward to backend
 	result, statusCode, err := s.Handler.Forward(tool, arguments, "")
+	inTok, outTok := resolveMCPTokens(toolName, arguments, result)
 
 	// Trace
 	entry := trace.Entry{
@@ -413,8 +418,9 @@ func (s *Server) handleToolsCall(params map[string]any) (any, *rpcError) {
 		Policy:                "allow",
 		PolicyRule:            decision.Rule,
 		StatusCode:            statusCode,
-		EstimatedInputTokens:  trace.EstimateTokens(arguments),
-		EstimatedOutputTokens: trace.EstimateTokens(result),
+		LatencyMs:             time.Since(start).Milliseconds(),
+		EstimatedInputTokens:  inTok,
+		EstimatedOutputTokens: outTok,
 	}
 	if err != nil {
 		entry.Error = err.Error()
@@ -914,4 +920,13 @@ func (s *Server) writeError(w io.Writer, id any, code int, msg string) {
 		Error:   &rpcError{Code: code, Message: msg},
 	}
 	s.writeResponse(w, resp)
+}
+
+// resolveMCPTokens returns real provider token counts when the tool is a known
+// LLM endpoint, otherwise the chars/4 estimate.
+func resolveMCPTokens(toolName string, params map[string]any, result any) (int, int) {
+	if in, out, ok := trace.ExtractLLMTokens(toolName, result); ok {
+		return in, out
+	}
+	return trace.EstimateTokens(params), trace.EstimateTokens(result)
 }

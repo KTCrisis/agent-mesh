@@ -250,11 +250,12 @@ func (h *Handler) handleToolCall(w http.ResponseWriter, r *http.Request) {
 			}
 			result, statusCode, err := h.Forward(tool, req.Params, traceID)
 			totalMs := time.Since(start).Milliseconds()
+			inTok, outTok := resolveTokens(toolName, req.Params, result)
 			h.Traces.Update(entry.TraceID, func(e *trace.Entry) {
 				e.StatusCode = statusCode
 				e.LatencyMs = totalMs
-				e.EstimatedInputTokens = trace.EstimateTokens(req.Params)
-				e.EstimatedOutputTokens = trace.EstimateTokens(result)
+				e.EstimatedInputTokens = inTok
+				e.EstimatedOutputTokens = outTok
 				if err != nil {
 					e.Error = err.Error()
 				}
@@ -302,6 +303,7 @@ func (h *Handler) handleToolCall(w http.ResponseWriter, r *http.Request) {
 	// 6. Forward to backend
 	result, statusCode, err := h.Forward(tool, req.Params, traceID)
 	latency := time.Since(start).Milliseconds()
+	inTok, outTok := resolveTokens(toolName, req.Params, result)
 
 	// 5. Trace
 	entry := trace.Entry{
@@ -313,8 +315,8 @@ func (h *Handler) handleToolCall(w http.ResponseWriter, r *http.Request) {
 		PolicyRule:            decision.Rule,
 		StatusCode:            statusCode,
 		LatencyMs:             latency,
-		EstimatedInputTokens:  trace.EstimateTokens(req.Params),
-		EstimatedOutputTokens: trace.EstimateTokens(result),
+		EstimatedInputTokens:  inTok,
+		EstimatedOutputTokens: outTok,
 	}
 	if err != nil {
 		entry.Error = err.Error()
@@ -789,6 +791,15 @@ func (h *Handler) handleRevokeGrant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, map[string]string{"status": "revoked", "id": id})
+}
+
+// resolveTokens returns real provider token counts when available (LLM tools),
+// otherwise falls back to the chars/4 estimate on params and result.
+func resolveTokens(toolName string, params map[string]any, result any) (int, int) {
+	if in, out, ok := trace.ExtractLLMTokens(toolName, result); ok {
+		return in, out
+	}
+	return trace.EstimateTokens(params), trace.EstimateTokens(result)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
