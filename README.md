@@ -338,6 +338,46 @@ Agents call CLI tools like any other MCP tool — `terraform.plan`, `kubectl.get
 
 See [docs/cli-tools.md](docs/cli-tools.md) for full documentation.
 
+### Supervisor protocol
+
+Agent Mesh exposes a rich approval API so that external **supervisor agents** can review and resolve approvals on behalf of humans — handling the 80% of routine decisions and escalating the rest.
+
+The supervisor is not built into agent-mesh. It's any external process that polls `GET /approvals` and calls `POST /approvals/{id}/approve` or `/deny`. Agent-mesh provides the protocol; you bring the logic.
+
+**Tool filtering** — domain-specific supervisors watch only their scope:
+
+```bash
+# Filesystem supervisor
+curl http://localhost:9090/approvals?status=pending&tool=filesystem.*
+
+# Gmail supervisor
+curl http://localhost:9090/approvals?status=pending&tool=gmail.*
+```
+
+**Context enrichment** — `GET /approvals/{id}` includes the agent's recent trace history and active grants, giving the supervisor evaluation context:
+
+```bash
+curl http://localhost:9090/approvals/a1b2c3d4 | jq '.recent_traces, .active_grants'
+```
+
+**Structured verdicts** — approve or deny with reasoning and confidence:
+
+```bash
+curl -X POST http://localhost:9090/approvals/a1b2c3d4/approve \
+  -d '{"resolved_by":"agent:supervisor","reasoning":"path within sandbox","confidence":0.95}'
+```
+
+Reasoning and confidence are stored in traces for audit and calibration.
+
+**Content isolation** — when `supervisor.expose_content: false`, raw param content is replaced with structural metadata (length, SHA256, type). The supervisor sees structure, not content — shrinking the prompt injection attack surface:
+
+```yaml
+supervisor:
+  expose_content: false
+```
+
+**Injection detection** — every approval view includes an `injection_risk` flag when suspicious patterns are found in tool params (e.g., "ignore previous instructions", "override policy").
+
 ### Tracing
 
 Every tool call is logged with agent, tool, params, policy decision, latency, and approval metadata.
@@ -481,9 +521,10 @@ Result: Claude searches flights, checks weather, estimates budgets — all trace
 | `GET` | `/tools` | List all registered tools |
 | `GET` | `/mcp-servers` | List connected upstream MCP servers |
 | `GET` | `/traces` | Query trace history (`?agent=...&tool=...`) |
-| `GET` | `/approvals` | List pending approvals |
-| `POST` | `/approvals/{id}/approve` | Approve a pending request |
-| `POST` | `/approvals/{id}/deny` | Deny a pending request |
+| `GET` | `/approvals` | List approvals (`?status=pending`, `?tool=filesystem.*`) |
+| `GET` | `/approvals/{id}` | Approval detail with agent context (recent traces, active grants) |
+| `POST` | `/approvals/{id}/approve` | Approve (optional: `reasoning`, `confidence`) |
+| `POST` | `/approvals/{id}/deny` | Deny (optional: `reasoning`, `confidence`) |
 | `GET` | `/grants` | List active temporal grants |
 | `POST` | `/grants` | Create a temporal grant |
 | `DELETE` | `/grants/{id}` | Revoke a grant |
@@ -525,6 +566,9 @@ agent-mesh/
 │   └── store.go           # Temporal grants (sudo for agents, TTL-based)
 ├── ratelimit/
 │   └── limiter.go         # Per-agent rate limiting + loop detection
+├── supervisor/
+│   ├── content.go         # Content isolation (redact params → metadata)
+│   └── injection.go       # Prompt injection detection in tool params
 ├── proxy/
 │   └── handler.go         # HTTP proxy (auth → rate limit → policy → forward → trace)
 ├── mcp/
@@ -556,19 +600,20 @@ go test ./... -race        # With race detector
 go test ./proxy/ -v        # One package
 ```
 
-158 tests across 11 packages:
+180+ tests across 14 packages:
 
 | Package | Tests | Covers |
 |---------|-------|--------|
 | `config` | 12 | YAML parsing, defaults, MCP servers, conditions, CLI tools validation |
 | `registry` | 17 | CRUD, loading, namespacing, concurrent access, CLI modes, ResolveCLI |
 | `policy` | 9 | Allow/deny, conditions, wildcards, globs, fail-closed |
-| `proxy` | 17 | REST, MCP, and CLI calls, deny/approval flows, URL encoding |
+| `proxy` | 27 | REST, MCP, CLI calls, approval flows, supervisor protocol, content redaction |
 | `exec` | 17 | Arg validation, shell injection, timeout, output cap, env isolation |
 | `grant` | 8 | Create, check, revoke, expiration, cleanup, glob matching |
 | `ratelimit` | 8 | Per-minute, total budget, loop detection, agent isolation |
 | `trace` | 11 | Record, filter, eviction, stats, JSONL persistence |
 | `mcp` | 16 | Client lifecycle, timeouts, SSE transport, approval flow |
+| `supervisor` | 18 | Content redaction, type detection, injection detection (positive/negative) |
 
 ## Roadmap
 
@@ -585,7 +630,7 @@ go test ./proxy/ -v        # One package
 - [x] Temporal grants (sudo for agents — `grant.create` MCP tool + HTTP API)
 - [x] Async approval (202 + poll via MCP virtual tools, HTTP API)
 - [x] CLI tool governance (terraform, kubectl, etc. — 3 modes, arg validation, secure exec)
-- [ ] Supervisor agent protocol
+- [x] Supervisor agent protocol (structured verdicts, content isolation, injection detection)
 - [ ] OpenTelemetry trace export
 - [ ] Dashboard UI
 
