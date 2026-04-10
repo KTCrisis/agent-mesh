@@ -250,12 +250,13 @@ func (h *Handler) handleToolCall(w http.ResponseWriter, r *http.Request) {
 			}
 			result, statusCode, err := h.Forward(tool, req.Params, traceID)
 			totalMs := time.Since(start).Milliseconds()
-			inTok, outTok := resolveTokens(toolName, req.Params, result)
+			inTok, outTok, tokSrc := resolveTokens(toolName, req.Params, result)
 			h.Traces.Update(entry.TraceID, func(e *trace.Entry) {
 				e.StatusCode = statusCode
 				e.LatencyMs = totalMs
 				e.EstimatedInputTokens = inTok
 				e.EstimatedOutputTokens = outTok
+				e.TokensSource = tokSrc
 				if err != nil {
 					e.Error = err.Error()
 				}
@@ -303,7 +304,7 @@ func (h *Handler) handleToolCall(w http.ResponseWriter, r *http.Request) {
 	// 6. Forward to backend
 	result, statusCode, err := h.Forward(tool, req.Params, traceID)
 	latency := time.Since(start).Milliseconds()
-	inTok, outTok := resolveTokens(toolName, req.Params, result)
+	inTok, outTok, tokSrc := resolveTokens(toolName, req.Params, result)
 
 	// 5. Trace
 	entry := trace.Entry{
@@ -317,6 +318,7 @@ func (h *Handler) handleToolCall(w http.ResponseWriter, r *http.Request) {
 		LatencyMs:             latency,
 		EstimatedInputTokens:  inTok,
 		EstimatedOutputTokens: outTok,
+		TokensSource:          tokSrc,
 	}
 	if err != nil {
 		entry.Error = err.Error()
@@ -795,11 +797,12 @@ func (h *Handler) handleRevokeGrant(w http.ResponseWriter, r *http.Request) {
 
 // resolveTokens returns real provider token counts when available (LLM tools),
 // otherwise falls back to the chars/4 estimate on params and result.
-func resolveTokens(toolName string, params map[string]any, result any) (int, int) {
+// The third return value is "real" or "estimate".
+func resolveTokens(toolName string, params map[string]any, result any) (int, int, string) {
 	if in, out, ok := trace.ExtractLLMTokens(toolName, result); ok {
-		return in, out
+		return in, out, "real"
 	}
-	return trace.EstimateTokens(params), trace.EstimateTokens(result)
+	return trace.EstimateTokens(params), trace.EstimateTokens(result), "estimate"
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

@@ -37,9 +37,11 @@ type Entry struct {
 	SupervisorReasoning  string  `json:"supervisor_reasoning,omitempty"`
 	SupervisorConfidence float64 `json:"supervisor_confidence,omitempty"`
 
-	// Token estimation (chars/4 heuristic)
-	EstimatedInputTokens  int `json:"estimated_input_tokens,omitempty"`
-	EstimatedOutputTokens int `json:"estimated_output_tokens,omitempty"`
+	// Token counts — real when the provider exposes them (LLM tools),
+	// chars/4 estimate otherwise. TokensSource says which.
+	EstimatedInputTokens  int    `json:"estimated_input_tokens,omitempty"`
+	EstimatedOutputTokens int    `json:"estimated_output_tokens,omitempty"`
+	TokensSource          string `json:"tokens_source,omitempty"` // "real" | "estimate"
 }
 
 // Store is a thread-safe trace store with optional JSONL file persistence.

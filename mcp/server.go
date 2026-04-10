@@ -328,12 +328,13 @@ func (s *Server) handleToolsCall(params map[string]any) (any, *rpcError) {
 				})
 
 				result, statusCode, err := s.Handler.Forward(tool, arguments, "")
-				inTok, outTok := resolveMCPTokens(toolName, arguments, result)
+				inTok, outTok, tokSrc := resolveMCPTokens(toolName, arguments, result)
 				s.Traces.Update(entry.TraceID, func(e *trace.Entry) {
 					e.StatusCode = statusCode
 					e.LatencyMs = time.Since(start).Milliseconds()
 					e.EstimatedInputTokens = inTok
 					e.EstimatedOutputTokens = outTok
+					e.TokensSource = tokSrc
 					if err != nil {
 						e.Error = err.Error()
 					}
@@ -408,7 +409,7 @@ func (s *Server) handleToolsCall(params map[string]any) (any, *rpcError) {
 
 	// Forward to backend
 	result, statusCode, err := s.Handler.Forward(tool, arguments, "")
-	inTok, outTok := resolveMCPTokens(toolName, arguments, result)
+	inTok, outTok, tokSrc := resolveMCPTokens(toolName, arguments, result)
 
 	// Trace
 	entry := trace.Entry{
@@ -421,6 +422,7 @@ func (s *Server) handleToolsCall(params map[string]any) (any, *rpcError) {
 		LatencyMs:             time.Since(start).Milliseconds(),
 		EstimatedInputTokens:  inTok,
 		EstimatedOutputTokens: outTok,
+		TokensSource:          tokSrc,
 	}
 	if err != nil {
 		entry.Error = err.Error()
@@ -923,10 +925,11 @@ func (s *Server) writeError(w io.Writer, id any, code int, msg string) {
 }
 
 // resolveMCPTokens returns real provider token counts when the tool is a known
-// LLM endpoint, otherwise the chars/4 estimate.
-func resolveMCPTokens(toolName string, params map[string]any, result any) (int, int) {
+// LLM endpoint, otherwise the chars/4 estimate. The third return value is
+// "real" or "estimate".
+func resolveMCPTokens(toolName string, params map[string]any, result any) (int, int, string) {
 	if in, out, ok := trace.ExtractLLMTokens(toolName, result); ok {
-		return in, out
+		return in, out, "real"
 	}
-	return trace.EstimateTokens(params), trace.EstimateTokens(result)
+	return trace.EstimateTokens(params), trace.EstimateTokens(result), "estimate"
 }
