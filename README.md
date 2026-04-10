@@ -378,6 +378,8 @@ supervisor:
 
 **Injection detection** — every approval view includes an `injection_risk` flag when suspicious patterns are found in tool params (e.g., "ignore previous instructions", "override policy").
 
+See [docs/supervisor-protocol.md](docs/supervisor-protocol.md) for the full protocol reference, evaluation guidelines, and how to build your own supervisor.
+
 ### Tracing
 
 Every tool call is logged with agent, tool, params, policy decision, latency, and approval metadata.
