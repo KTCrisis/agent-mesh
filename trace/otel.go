@@ -2,6 +2,7 @@ package trace
 
 import (
 	"bytes"
+	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -152,8 +153,8 @@ func (e *OTELExporter) toOTLP(entry Entry) otlpExport {
 
 	// Pad or truncate trace ID to 32 hex chars (16 bytes)
 	traceID := padHex(entry.TraceID, 32)
-	// Generate span ID: 16 hex chars from trace ID + tool hash
-	spanID := padHex(hex.EncodeToString([]byte(entry.Tool+entry.TraceID)), 16)
+	// Span ID: 8 random bytes (16 hex chars) per OTEL spec
+	spanID := randomSpanID()
 
 	attrs := []otlpKV{
 		{Key: "agent.id", Value: strVal(entry.AgentID)},
@@ -245,6 +246,16 @@ func (e *OTELExporter) Close() error {
 		return e.file.Close()
 	}
 	return nil
+}
+
+// randomSpanID returns 8 random bytes as a 16-char hex string.
+// Falls back to a timestamp-derived ID if the RNG fails (should never happen).
+func randomSpanID() string {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return padHex(fmt.Sprintf("%x", time.Now().UnixNano()), 16)
+	}
+	return hex.EncodeToString(b[:])
 }
 
 // padHex pads or truncates a hex string to exactly n chars.
