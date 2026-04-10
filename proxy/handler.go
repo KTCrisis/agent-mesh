@@ -13,11 +13,14 @@ import (
 	"time"
 
 	"github.com/KTCrisis/agent-mesh/approval"
+	"github.com/KTCrisis/agent-mesh/config"
 	meshexec "github.com/KTCrisis/agent-mesh/exec"
 	"github.com/KTCrisis/agent-mesh/grant"
+	"github.com/KTCrisis/agent-mesh/internal/match"
 	"github.com/KTCrisis/agent-mesh/policy"
 	"github.com/KTCrisis/agent-mesh/ratelimit"
 	"github.com/KTCrisis/agent-mesh/registry"
+	"github.com/KTCrisis/agent-mesh/supervisor"
 	"github.com/KTCrisis/agent-mesh/trace"
 )
 
@@ -50,9 +53,10 @@ type Handler struct {
 	Approvals    *approval.Store
 	RateLimiter  *ratelimit.Limiter
 	Grants       *grant.Store
-	Client       *http.Client
-	MCPForwarder MCPForwarder
-	CLIRunner    *meshexec.Runner
+	Client        *http.Client
+	MCPForwarder  MCPForwarder
+	CLIRunner     *meshexec.Runner
+	SupervisorCfg config.SupervisorConfig
 }
 
 func NewHandler(reg *registry.Registry, pol *policy.Engine, traces *trace.Store) *Handler {
@@ -232,6 +236,8 @@ func (h *Handler) handleToolCall(w http.ResponseWriter, r *http.Request) {
 			e.ApprovalStatus = string(resolution.Status)
 			e.ApprovedBy = resolution.ResolvedBy
 			e.ApprovalMs = approvalMs
+			e.SupervisorReasoning = resolution.Reasoning
+			e.SupervisorConfidence = resolution.Confidence
 		})
 
 		switch resolution.Status {
@@ -511,28 +517,45 @@ func extractAgentID(r *http.Request) string {
 // --- Approval endpoints ---
 
 type approvalView struct {
-	ID         string         `json:"id"`
-	AgentID    string         `json:"agent_id"`
-	Tool       string         `json:"tool"`
-	Params     map[string]any `json:"params"`
-	PolicyRule string         `json:"policy_rule"`
-	Status     string         `json:"status"`
-	CreatedAt  time.Time      `json:"created_at"`
-	Remaining  string         `json:"remaining,omitempty"`
-	ResolvedBy string         `json:"resolved_by,omitempty"`
-	ResolvedAt *time.Time     `json:"resolved_at,omitempty"`
+	ID            string         `json:"id"`
+	AgentID       string         `json:"agent_id"`
+	Tool          string         `json:"tool"`
+	Params        map[string]any `json:"params"`
+	PolicyRule    string         `json:"policy_rule"`
+	Status        string         `json:"status"`
+	CreatedAt     time.Time      `json:"created_at"`
+	Remaining     string         `json:"remaining,omitempty"`
+	ResolvedBy    string         `json:"resolved_by,omitempty"`
+	ResolvedAt    *time.Time     `json:"resolved_at,omitempty"`
+	Reasoning     string         `json:"reasoning,omitempty"`
+	Confidence    float64        `json:"confidence,omitempty"`
+	InjectionRisk bool           `json:"injection_risk,omitempty"`
+}
+
+// approvalDetailView extends approvalView with context for supervisor evaluation.
+type approvalDetailView struct {
+	approvalView
+	RecentTraces []trace.Entry `json:"recent_traces,omitempty"`
+	ActiveGrants []grantView   `json:"active_grants,omitempty"`
 }
 
 func (h *Handler) toApprovalView(pa *approval.PendingApproval) approvalView {
+	params := pa.Params
+	if !h.SupervisorCfg.ShouldExposeContent() {
+		params = supervisor.RedactParams(params)
+	}
 	v := approvalView{
-		ID:         pa.ID,
-		AgentID:    pa.AgentID,
-		Tool:       pa.Tool,
-		Params:     pa.Params,
-		PolicyRule: pa.PolicyRule,
-		Status:     string(pa.Status),
-		CreatedAt:  pa.CreatedAt,
-		ResolvedBy: pa.ResolvedBy,
+		ID:            pa.ID,
+		AgentID:       pa.AgentID,
+		Tool:          pa.Tool,
+		Params:        params,
+		PolicyRule:    pa.PolicyRule,
+		Status:        string(pa.Status),
+		CreatedAt:     pa.CreatedAt,
+		ResolvedBy:    pa.ResolvedBy,
+		Reasoning:     pa.Reasoning,
+		Confidence:    pa.Confidence,
+		InjectionRisk: supervisor.DetectInjection(pa.Params),
 	}
 	if pa.Status == approval.StatusPending && h.Approvals != nil {
 		v.Remaining = pa.Remaining(h.Approvals.Timeout()).Truncate(time.Second).String()
@@ -549,15 +572,21 @@ func (h *Handler) handleListApprovals(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	status := r.URL.Query().Get("status")
+	toolFilter := r.URL.Query().Get("tool")
+
 	var list []*approval.PendingApproval
 	if status == "pending" {
 		list = h.Approvals.ListPending()
 	} else {
 		list = h.Approvals.List()
 	}
-	views := make([]approvalView, len(list))
-	for i, pa := range list {
-		views[i] = h.toApprovalView(pa)
+
+	views := make([]approvalView, 0, len(list))
+	for _, pa := range list {
+		if toolFilter != "" && !match.Glob(toolFilter, pa.Tool) {
+			continue
+		}
+		views = append(views, h.toApprovalView(pa))
 	}
 	writeJSON(w, 200, views)
 }
@@ -573,11 +602,39 @@ func (h *Handler) handleGetApproval(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 404, map[string]string{"error": "approval not found"})
 		return
 	}
-	writeJSON(w, 200, h.toApprovalView(pa))
+
+	detail := approvalDetailView{
+		approvalView: h.toApprovalView(pa),
+	}
+
+	// Enrich with agent's recent trace history
+	if h.Traces != nil {
+		detail.RecentTraces = h.Traces.Query(pa.AgentID, "", 10)
+	}
+
+	// Enrich with agent's active grants
+	if h.Grants != nil {
+		for _, g := range h.Grants.List() {
+			if match.Glob(g.Agent, pa.AgentID) {
+				detail.ActiveGrants = append(detail.ActiveGrants, grantView{
+					ID:        g.ID,
+					Agent:     g.Agent,
+					Tools:     g.Tools,
+					ExpiresAt: g.ExpiresAt.Format(time.RFC3339),
+					Remaining: g.Remaining().Truncate(time.Second).String(),
+					GrantedBy: g.GrantedBy,
+				})
+			}
+		}
+	}
+
+	writeJSON(w, 200, detail)
 }
 
 type resolveRequest struct {
-	ResolvedBy string `json:"resolved_by"`
+	ResolvedBy string  `json:"resolved_by"`
+	Reasoning  string  `json:"reasoning"`
+	Confidence float64 `json:"confidence"`
 }
 
 func (h *Handler) handleApproveAction(w http.ResponseWriter, r *http.Request) {
@@ -605,7 +662,11 @@ func (h *Handler) handleResolveAction(w http.ResponseWriter, r *http.Request, st
 		req.ResolvedBy = "http:" + r.RemoteAddr
 	}
 
-	err := h.Approvals.Resolve(id, status, req.ResolvedBy)
+	err := h.Approvals.Resolve(id, status, approval.ResolveOpts{
+		ResolvedBy: req.ResolvedBy,
+		Reasoning:  req.Reasoning,
+		Confidence: req.Confidence,
+	})
 	if err == approval.ErrNotFound {
 		writeJSON(w, 404, map[string]string{"error": "approval not found"})
 		return

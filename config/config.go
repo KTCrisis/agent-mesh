@@ -12,9 +12,24 @@ type Config struct {
 	Port       int               `yaml:"port"`
 	TraceFile  string            `yaml:"trace_file"`
 	Approval   ApprovalConfig    `yaml:"approval"`
+	Supervisor SupervisorConfig  `yaml:"supervisor"`
 	Policies   []Policy          `yaml:"policies"`
 	MCPServers []MCPServerConfig `yaml:"mcp_servers"`
 	CLITools   []CLIToolConfig   `yaml:"cli_tools"`
+}
+
+// SupervisorConfig controls content isolation for external supervisor agents.
+type SupervisorConfig struct {
+	ExposeContent *bool `yaml:"expose_content"`
+}
+
+// ShouldExposeContent returns whether raw param content should be exposed.
+// Defaults to true when not explicitly set.
+func (s SupervisorConfig) ShouldExposeContent() bool {
+	if s.ExposeContent == nil {
+		return true
+	}
+	return *s.ExposeContent
 }
 
 // CLIToolConfig declares a CLI binary to wrap as governed tools.

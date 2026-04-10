@@ -32,6 +32,10 @@ type Entry struct {
 	ApprovalStatus string `json:"approval_status,omitempty"` // approved, denied, timeout
 	ApprovedBy     string `json:"approved_by,omitempty"`
 	ApprovalMs     int64  `json:"approval_ms,omitempty"`
+
+	// Supervisor fields (populated when resolved by a supervisor agent)
+	SupervisorReasoning  string  `json:"supervisor_reasoning,omitempty"`
+	SupervisorConfidence float64 `json:"supervisor_confidence,omitempty"`
 }
 
 // Store is a thread-safe trace store with optional JSONL file persistence.

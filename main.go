@@ -146,6 +146,7 @@ func main() {
 	handler.Approvals = approvals
 	handler.RateLimiter = limiter
 	handler.Grants = grants
+	handler.SupervisorCfg = cfg.Supervisor
 	if len(cfg.CLITools) > 0 {
 		handler.CLIRunner = &meshexec.Runner{MaxOutputBytes: 1 << 20}
 	}

@@ -24,6 +24,15 @@ type Resolution struct {
 	Status     Status
 	ResolvedBy string
 	ResolvedAt time.Time
+	Reasoning  string
+	Confidence float64
+}
+
+// ResolveOpts contains optional fields for resolving an approval.
+type ResolveOpts struct {
+	ResolvedBy string
+	Reasoning  string
+	Confidence float64
 }
 
 // PendingApproval represents a tool call waiting for human decision.
@@ -39,6 +48,8 @@ type PendingApproval struct {
 	CreatedAt   time.Time      `json:"created_at"`
 	ResolvedBy  string         `json:"resolved_by,omitempty"`
 	ResolvedAt  time.Time      `json:"resolved_at,omitempty"`
+	Reasoning   string         `json:"reasoning,omitempty"`
+	Confidence  float64        `json:"confidence,omitempty"`
 	Result      chan Resolution `json:"-"`
 }
 
@@ -129,7 +140,7 @@ var (
 // Resolve sets the status of a pending approval and unblocks the handler.
 // Supports prefix matching: if id is not an exact match, it tries to find
 // a unique entry whose ID starts with the given prefix.
-func (s *Store) Resolve(id string, status Status, resolvedBy string) error {
+func (s *Store) Resolve(id string, status Status, opts ResolveOpts) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -143,12 +154,16 @@ func (s *Store) Resolve(id string, status Status, resolvedBy string) error {
 
 	now := time.Now().UTC()
 	pa.Status = status
-	pa.ResolvedBy = resolvedBy
+	pa.ResolvedBy = opts.ResolvedBy
 	pa.ResolvedAt = now
+	pa.Reasoning = opts.Reasoning
+	pa.Confidence = opts.Confidence
 	res := Resolution{
 		Status:     status,
-		ResolvedBy: resolvedBy,
+		ResolvedBy: opts.ResolvedBy,
 		ResolvedAt: now,
+		Reasoning:  opts.Reasoning,
+		Confidence: opts.Confidence,
 	}
 	pa.Result <- res
 	// Callback agent (if X-Callback-URL was set)
@@ -158,12 +173,12 @@ func (s *Store) Resolve(id string, status Status, resolvedBy string) error {
 
 // Approve is a convenience wrapper for Resolve with StatusApproved.
 func (s *Store) Approve(id, resolvedBy string) error {
-	return s.Resolve(id, StatusApproved, resolvedBy)
+	return s.Resolve(id, StatusApproved, ResolveOpts{ResolvedBy: resolvedBy})
 }
 
 // Deny is a convenience wrapper for Resolve with StatusDenied.
 func (s *Store) Deny(id, resolvedBy string) error {
-	return s.Resolve(id, StatusDenied, resolvedBy)
+	return s.Resolve(id, StatusDenied, ResolveOpts{ResolvedBy: resolvedBy})
 }
 
 // Get returns a pending approval by ID or prefix, or nil if not found.
