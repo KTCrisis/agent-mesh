@@ -602,20 +602,21 @@ go test ./... -race        # With race detector
 go test ./proxy/ -v        # One package
 ```
 
-180+ tests across 14 packages:
+222 tests across 14 packages:
 
 | Package | Tests | Covers |
 |---------|-------|--------|
-| `config` | 12 | YAML parsing, defaults, MCP servers, conditions, CLI tools validation |
-| `registry` | 17 | CRUD, loading, namespacing, concurrent access, CLI modes, ResolveCLI |
+| `config` | 16 | YAML parsing, defaults, MCP servers, conditions, CLI tools, supervisor config |
+| `registry` | 16 | CRUD, loading, namespacing, concurrent access, CLI modes, ResolveCLI |
 | `policy` | 9 | Allow/deny, conditions, wildcards, globs, fail-closed |
-| `proxy` | 27 | REST, MCP, CLI calls, approval flows, supervisor protocol, content redaction |
-| `exec` | 17 | Arg validation, shell injection, timeout, output cap, env isolation |
+| `proxy` | 36 | REST, MCP, CLI calls, approval flows, supervisor protocol, content redaction |
+| `exec` | 30 | Arg validation, shell injection, timeout, output cap, env isolation |
 | `grant` | 8 | Create, check, revoke, expiration, cleanup, glob matching |
 | `ratelimit` | 8 | Per-minute, total budget, loop detection, agent isolation |
-| `trace` | 11 | Record, filter, eviction, stats, JSONL persistence |
-| `mcp` | 16 | Client lifecycle, timeouts, SSE transport, approval flow |
-| `supervisor` | 18 | Content redaction, type detection, injection detection (positive/negative) |
+| `trace` | 14 | Record, filter, eviction, stats, JSONL persistence, supervisor fields |
+| `mcp` | 33 | Client lifecycle, timeouts, SSE transport, approval flow, supervisor mode |
+| `supervisor` | 30 | Content redaction, type detection, injection detection (positive/negative) |
+| `approval` | 17 | Submit, resolve, timeout, prefix match, concurrent, notify |
 
 ## Roadmap
 
