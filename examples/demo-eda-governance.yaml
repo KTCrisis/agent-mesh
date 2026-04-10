@@ -1,0 +1,199 @@
+# demo-eda-governance.yaml — 15 agents, API/EDA governance team
+#
+# Scenario: a platform team governing APIs, AsyncAPI specs, Kafka schemas,
+# and event-driven resources. Agents write specs, validate, score,
+# deploy to registries, and maintain catalogs.
+#
+# Run:
+#   agent-mesh --config examples/demo-eda-governance.yaml
+#   python examples/demo-simulate.py --scenario eda
+
+port: 9090
+trace_file: traces-eda.jsonl
+
+supervisor:
+  enabled: true
+
+mcp_servers:
+  - name: filesystem
+    transport: stdio
+    command: npx
+    args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp/demo-eda"]
+
+  - name: ollama
+    transport: stdio
+    command: /home/fluxart/ollama-mcp-go/ollama-mcp-go
+
+  - name: memory
+    transport: stdio
+    command: /home/fluxart/memory-mcp-go/memory-mcp-go
+
+  - name: git
+    transport: stdio
+    command: uvx
+    args: ["mcp-server-git"]
+
+policies:
+  # ─── Spec writers: generate/edit API and event specs ───
+  - name: spec-writers
+    agent: "writer-*"
+    rate_limit:
+      max_per_minute: 25
+      max_total: 400
+    rules:
+      - tools: ["filesystem.read_*", "filesystem.list_*", "filesystem.search_*", "filesystem.get_*", "filesystem.directory_tree"]
+        action: allow
+      - tools: ["filesystem.write_file", "filesystem.edit_file", "filesystem.create_directory"]
+        action: human_approval
+      - tools: ["filesystem.move_file"]
+        action: deny
+      - tools: ["ollama.*"]
+        action: allow
+      - tools: ["memory.*"]
+        action: allow
+      - tools: ["git.*"]
+        action: deny
+
+  # ─── Readers/analyzers: read specs, summarize, detect patterns ───
+  - name: readers
+    agent: "reader-*"
+    rate_limit:
+      max_per_minute: 30
+      max_total: 500
+    rules:
+      - tools: ["filesystem.read_*", "filesystem.list_*", "filesystem.search_*", "filesystem.get_*", "filesystem.directory_tree"]
+        action: allow
+      - tools: ["filesystem.*"]
+        action: deny
+      - tools: ["ollama.*"]
+        action: allow
+      - tools: ["memory.*"]
+        action: allow
+
+  # ─── Validators/linters: read specs, validate against rules ───
+  - name: validators
+    agent: "validator-*"
+    rate_limit:
+      max_per_minute: 30
+      max_total: 500
+    rules:
+      - tools: ["filesystem.read_*", "filesystem.list_*", "filesystem.search_*", "filesystem.get_*", "filesystem.directory_tree"]
+        action: allow
+      - tools: ["filesystem.*"]
+        action: deny
+      - tools: ["ollama.*"]
+        action: allow
+      - tools: ["memory.memory_store", "memory.memory_recall", "memory.memory_list"]
+        action: allow
+      - tools: ["memory.*"]
+        action: deny
+
+  # ─── Ops registry: deploy schemas/specs to registries ───
+  - name: ops-registry
+    agent: "ops-registry"
+    rate_limit:
+      max_per_minute: 10
+      max_total: 100
+    rules:
+      - tools: ["filesystem.read_*", "filesystem.list_*", "filesystem.get_*"]
+        action: allow
+      - tools: ["filesystem.write_file"]
+        action: human_approval
+      - tools: ["filesystem.*"]
+        action: deny
+      - tools: ["git.*"]
+        action: human_approval
+      - tools: ["memory.*"]
+        action: allow
+
+  # ─── Ops catalog: update EventCatalog/event7 ───
+  - name: ops-catalog
+    agent: "ops-catalog"
+    rate_limit:
+      max_per_minute: 15
+      max_total: 200
+    rules:
+      - tools: ["filesystem.read_*", "filesystem.list_*", "filesystem.search_*", "filesystem.get_*", "filesystem.directory_tree"]
+        action: allow
+      - tools: ["filesystem.write_file", "filesystem.edit_file"]
+        action: human_approval
+      - tools: ["filesystem.*"]
+        action: deny
+      - tools: ["git.git_log", "git.git_diff", "git.git_status"]
+        action: allow
+      - tools: ["git.*"]
+        action: human_approval
+      - tools: ["memory.*"]
+        action: allow
+
+  # ─── Ops deploy: deploy Kafka resources (topics, ACLs, connectors) ───
+  - name: ops-deploy
+    agent: "ops-deploy"
+    rate_limit:
+      max_per_minute: 10
+      max_total: 100
+    rules:
+      - tools: ["filesystem.read_*", "filesystem.list_*", "filesystem.get_*"]
+        action: allow
+      - tools: ["filesystem.write_file"]
+        action: human_approval
+      - tools: ["filesystem.*"]
+        action: deny
+      - tools: ["git.*"]
+        action: human_approval
+      - tools: ["memory.*"]
+        action: allow
+
+  # ─── Governance scorer: compute governance scores ───
+  - name: governance-scorer
+    agent: "governance-scorer"
+    rate_limit:
+      max_per_minute: 20
+      max_total: 300
+    rules:
+      - tools: ["filesystem.read_*", "filesystem.list_*", "filesystem.search_*", "filesystem.get_*"]
+        action: allow
+      - tools: ["filesystem.*"]
+        action: deny
+      - tools: ["memory.*"]
+        action: allow
+      - tools: ["ollama.*"]
+        action: allow
+
+  # ─── Governance reviewer: review spec changes before merge ───
+  - name: governance-reviewer
+    agent: "governance-reviewer"
+    rate_limit:
+      max_per_minute: 20
+      max_total: 300
+    rules:
+      - tools: ["filesystem.read_*", "filesystem.list_*", "filesystem.search_*", "filesystem.get_*", "filesystem.directory_tree"]
+        action: allow
+      - tools: ["filesystem.*"]
+        action: deny
+      - tools: ["git.git_log", "git.git_diff", "git.git_show", "git.git_status"]
+        action: allow
+      - tools: ["git.*"]
+        action: deny
+      - tools: ["memory.*"]
+        action: allow
+      - tools: ["ollama.*"]
+        action: allow
+
+  # ─── Supervisor: auto-resolve approvals, escalate edge cases ───
+  - name: supervisor
+    agent: "supervisor"
+    rules:
+      - tools: ["memory.*"]
+        action: allow
+      - tools: ["ollama.*"]
+        action: allow
+      - tools: ["*"]
+        action: deny
+
+  # ─── Default: deny everything ───
+  - name: default
+    agent: "*"
+    rules:
+      - tools: ["*"]
+        action: deny

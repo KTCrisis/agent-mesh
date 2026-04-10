@@ -1,0 +1,182 @@
+# demo-enterprise.yaml — 15 agents, classic enterprise DSI roles
+#
+# Scenario: a software team with developers, reviewers, QA, ops,
+# security, tech writers, and a supervisor agent.
+#
+# Run:
+#   agent-mesh --config examples/demo-enterprise.yaml
+#   python examples/demo-simulate.py --scenario enterprise
+
+port: 9090
+trace_file: /home/fluxart/agent-mesh/traces.jsonl
+
+supervisor:
+  enabled: true
+
+mcp_servers:
+  - name: filesystem
+    transport: stdio
+    command: npx
+    args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp/demo-enterprise"]
+
+  - name: ollama
+    transport: stdio
+    command: /home/fluxart/ollama-mcp-go/ollama-mcp-go
+
+  - name: memory
+    transport: stdio
+    command: /home/fluxart/memory-mcp-go/memory-mcp-go
+
+  - name: git
+    transport: stdio
+    command: uvx
+    args: ["mcp-server-git"]
+
+policies:
+  # ─── Developers: read all, write with approval, no delete ───
+  - name: developers
+    agent: "dev-*"
+    rate_limit:
+      max_per_minute: 30
+      max_total: 500
+    rules:
+      - tools: ["filesystem.read_*", "filesystem.list_*", "filesystem.search_*", "filesystem.get_*", "filesystem.directory_tree"]
+        action: allow
+      - tools: ["filesystem.write_file", "filesystem.edit_file", "filesystem.create_directory"]
+        action: human_approval
+      - tools: ["filesystem.move_file"]
+        action: deny
+      - tools: ["git.*"]
+        action: allow
+      - tools: ["ollama.*"]
+        action: allow
+      - tools: ["memory.*"]
+        action: allow
+
+  # ─── Reviewers: read-only code + memory, no writes ───
+  - name: reviewers
+    agent: "review-*"
+    rate_limit:
+      max_per_minute: 20
+      max_total: 300
+    rules:
+      - tools: ["filesystem.read_*", "filesystem.list_*", "filesystem.search_*", "filesystem.get_*", "filesystem.directory_tree"]
+        action: allow
+      - tools: ["filesystem.*"]
+        action: deny
+      - tools: ["git.git_log", "git.git_diff", "git.git_show", "git.git_status"]
+        action: allow
+      - tools: ["git.*"]
+        action: deny
+      - tools: ["memory.*"]
+        action: allow
+      - tools: ["ollama.*"]
+        action: allow
+
+  # ─── QA: read code, run tests (bash limited), write test files with approval ───
+  - name: qa
+    agent: "qa-*"
+    rate_limit:
+      max_per_minute: 20
+      max_total: 300
+    rules:
+      - tools: ["filesystem.read_*", "filesystem.list_*", "filesystem.search_*", "filesystem.get_*", "filesystem.directory_tree"]
+        action: allow
+      - tools: ["filesystem.write_file", "filesystem.edit_file"]
+        action: human_approval
+      - tools: ["filesystem.*"]
+        action: deny
+      - tools: ["ollama.*"]
+        action: allow
+      - tools: ["memory.*"]
+        action: allow
+
+  # ─── Ops: infrastructure access with approval gates ───
+  - name: ops
+    agent: "ops-*"
+    rate_limit:
+      max_per_minute: 15
+      max_total: 200
+    rules:
+      - tools: ["filesystem.read_*", "filesystem.list_*", "filesystem.get_*"]
+        action: allow
+      - tools: ["filesystem.write_file"]
+        action: human_approval
+      - tools: ["filesystem.*"]
+        action: deny
+      - tools: ["git.*"]
+        action: allow
+      - tools: ["memory.*"]
+        action: allow
+
+  # ─── Security: read everything, write nothing ───
+  - name: security
+    agent: "security-*"
+    rate_limit:
+      max_per_minute: 25
+      max_total: 400
+    rules:
+      - tools: ["filesystem.read_*", "filesystem.list_*", "filesystem.search_*", "filesystem.get_*", "filesystem.directory_tree"]
+        action: allow
+      - tools: ["filesystem.*"]
+        action: deny
+      - tools: ["git.git_log", "git.git_diff", "git.git_show"]
+        action: allow
+      - tools: ["git.*"]
+        action: deny
+      - tools: ["ollama.*"]
+        action: allow
+      - tools: ["memory.*"]
+        action: allow
+
+  # ─── Tech writers: write docs only, read everything ───
+  - name: writers
+    agent: "writer-*"
+    rate_limit:
+      max_per_minute: 15
+      max_total: 200
+    rules:
+      - tools: ["filesystem.read_*", "filesystem.list_*", "filesystem.search_*", "filesystem.get_*", "filesystem.directory_tree"]
+        action: allow
+      - tools: ["filesystem.write_file"]
+        action: human_approval
+      - tools: ["filesystem.*"]
+        action: deny
+      - tools: ["ollama.*"]
+        action: allow
+      - tools: ["memory.*"]
+        action: allow
+
+  # ─── Project manager: read-only, memory for tracking ───
+  - name: pm
+    agent: "pm-*"
+    rate_limit:
+      max_per_minute: 10
+      max_total: 150
+    rules:
+      - tools: ["filesystem.read_*", "filesystem.list_*", "filesystem.get_*"]
+        action: allow
+      - tools: ["filesystem.*"]
+        action: deny
+      - tools: ["memory.*"]
+        action: allow
+      - tools: ["ollama.*"]
+        action: allow
+
+  # ─── Supervisor: approval API only (exposed via HTTP, not MCP) ───
+  - name: supervisor
+    agent: "supervisor"
+    rules:
+      - tools: ["memory.*"]
+        action: allow
+      - tools: ["ollama.*"]
+        action: allow
+      - tools: ["*"]
+        action: deny
+
+  # ─── Default: deny everything ───
+  - name: default
+    agent: "*"
+    rules:
+      - tools: ["*"]
+        action: deny
