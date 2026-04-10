@@ -1,210 +1,253 @@
 # Deployment Modes
 
-Agent-mesh can run in different configurations depending on how many agents and services need to connect.
+Agent-mesh supports different configurations depending on who connects and how.
 
-## Mode 1: Embedded (Claude Code default)
+## Configuration matrix
 
-Claude Code launches agent-mesh as a stdio subprocess. Agent-mesh starts an HTTP API on `:9090` in the background.
+| # | Setup | Transport | Who launches mesh | Supervisor | Status |
+|---|-------|-----------|-------------------|------------|--------|
+| **1** | Solo dev + Claude/Cursor | MCP stdio | Claude spawns it | None | Works |
+| **2** | Solo dev + Claude + supervisor | MCP stdio + HTTP | Claude spawns it | Passive (poll :9090) | Works while Claude runs |
+| **3** | Supervisor standalone (no Claude) | HTTP | Supervisor spawns it | Active | Works |
+| **4** | External agent (LangChain, script) | HTTP | Manual or supervisor | Optional | Works |
+| **5** | Claude + external agent | MCP stdio + HTTP | Claude spawns it | Optional | Works |
+| **6** | Claude + supervisor (active spawn) | MCP stdio + HTTP | Both try to spawn | Active | **Port conflict** |
+| **7** | 2 Claude sessions | MCP stdio × 2 | Both spawn | - | **Port conflict** |
+
+Configs 1–5 work today. Configs 6–7 have a port conflict that requires either passive mode or the future daemon mode.
+
+---
+
+## Config 1: Solo dev + Claude (most common)
+
+The default. 90% of users. Zero setup.
 
 ```
-Claude Code ──stdio──> agent-mesh ──> upstream MCP servers
+Claude Code ──stdio──> agent-mesh ──> filesystem, gmail, ollama...
                            │
-                      :9090 HTTP (background)
+                      :9090 HTTP (background, for mesh CLI / traces)
 ```
 
-**Pros:** Zero setup, single process.
-**Cons:** Ephemeral — stops when Claude quits. Only one instance per port.
+Claude launches agent-mesh as an MCP subprocess. Agent-mesh launches upstream MCP servers, applies policies, records traces. When Claude quits, everything stops cleanly.
 
-## Mode 2: Supervisor-managed (recommended)
-
-The supervisor is the persistent process. It spawns agent-mesh automatically, monitors it, and restarts it on crash. Agent-mesh lives as long as the supervisor lives — independent of Claude sessions.
-
-```
-supervisor (always alive)
-  │
-  ├── spawn/restart ──> agent-mesh :9090 ──> filesystem, gmail, ollama-mcp, memory-mcp
-  │                          │
-  ├── poll ─────────────── GET /approvals
-  ├── evaluate ─────────── rules (0ms) or ollama (~20s)
-  ├── resolve ─────────── POST /approvals/{id}/approve|deny
-  ├── store ───────────── POST /tool/memory.memory_store
-  └── recall ──────────── POST /tool/memory.memory_recall (on startup)
-                             │
-Claude Code ──stdio or HTTP──┘  (connects to running agent-mesh)
-Agent B ──────────HTTP───────┘
-```
-
-### How to run
-
-**One terminal — that's it:**
+**Setup:** Just add agent-mesh as an MCP server in Claude Code:
 
 ```bash
+claude mcp add agent-mesh -- agent-mesh --mcp --config config.yaml
+```
+
+## Config 2: Solo dev + Claude + supervisor (passive)
+
+Claude manages agent-mesh. The supervisor connects to Claude's instance on `:9090` and auto-resolves approvals.
+
+```
+Claude Code ──stdio──> agent-mesh :9090 ──> tools
+                           │
+                    supervisor (poll GET /approvals)
+                    ├── rules → approve/deny (0ms)
+                    └── ollama → evaluate (~20s)
+```
+
+Claude sees tool calls that block briefly (~2s for rules, ~20s for Ollama) then return results. No approval UI, no manual intervention for routine operations.
+
+**Setup:**
+
+```bash
+# Terminal 1: Claude (launches agent-mesh automatically)
+claude
+
+# Terminal 2: Supervisor
 cd ~/agent7
 python -m backend.app.services.supervisor --config supervisor.local.yaml
 ```
 
-The supervisor:
+With `supervisor.enabled: true` in the agent-mesh config, `approval.resolve` and `approval.pending` tools are hidden from Claude. Tool calls block until the supervisor resolves them.
 
-1. Starts and checks if agent-mesh is running on `:9090`
-2. Not there → **spawns** `agent-mesh --config <path>`
-3. Waits for health check (`GET /health`) to respond
-4. **Recalls** previous decisions from memory-mcp
-5. Enters poll loop — evaluates and resolves approvals
-6. Agent-mesh crashes → **auto-restarts** within seconds
-7. Stores every decision in memory-mcp for context across sessions
-8. Claude Code connects whenever it starts — agent-mesh is already running
-
-### Configuration
+**Supervisor config:**
 
 ```yaml
 supervisor:
   mesh_url: http://localhost:9090
-  agent_id: my-supervisor
-  poll_interval: 2s
-
-  # Auto-spawn agent-mesh
   mesh_process:
-    enabled: true
-    command: agent-mesh
-    config: /path/to/my-flow.local.yaml
-    restart_delay: 5
-
-  # Store/recall decisions via memory-mcp
-  memory:
-    enabled: true
-    store_decisions: true
-    recall_on_start: true
-    recall_limit: 20
-    tags: ["supervisor", "decision"]
-
-  # LLM fallback for ambiguous cases
+    enabled: false    # Claude manages the lifecycle
   ollama:
     enabled: true
-    url: http://localhost:11434
     model: qwen3:14b
-
-  # Fast path rules (no LLM needed)
-  project_dirs: [/home/user]
   rules:
-    - name: home-writes
+    - name: project-scope
       condition: "params.path starts_with /home/user"
       action: approve
       confidence: 0.95
-    - name: deny-system
-      condition: "params.path starts_with /etc"
-      action: deny
-      confidence: 0.99
-    # catch-all → Ollama evaluates (auto-appended)
 ```
 
-### What happens when Claude quits
+**Limitation:** When Claude quits, agent-mesh dies. The supervisor retries every `poll_interval` until Claude starts again.
 
-| Before (Mode 1) | After (Mode 2) |
-|-----------------|-----------------|
-| agent-mesh dies with Claude | agent-mesh stays alive (supervisor manages it) |
-| Supervisor loses connection, waits | Supervisor never loses connection |
-| Context lost between sessions | Decisions stored in memory-mcp, recalled on next start |
-| Next Claude session spawns new agent-mesh | Next Claude session connects to existing agent-mesh |
+## Config 3: Supervisor standalone (no Claude)
 
-### Decision flow
+For pipelines, overnight runs, CI/CD, batch jobs. No human in the loop — the supervisor manages everything.
 
 ```
-Approval arrives
+supervisor (always alive)
   │
-  ├─ injection_risk? ──────────────────→ ESCALATE (0ms)
+  ├── spawn/restart ──> agent-mesh :9090 ──> tools
   │
-  ├─ Rule matches? ────────────────────→ APPROVE/DENY (0ms, no LLM)
-  │
-  ├─ Ollama enabled? ──→ LLM evaluate
-  │   ├─ confidence ≥ threshold ───────→ APPROVE/DENY (~20s)
-  │   ├─ confidence < threshold ───────→ ESCALATE
-  │   └─ Ollama down ─────────────────→ ESCALATE
-  │
-  └─ Ollama disabled? ────────────────→ ESCALATE (human decides)
+  ├── poll → evaluate → resolve
+  └── store decisions in memory-mcp
 ```
 
-Every decision is:
-- Logged to `supervisor-decisions.jsonl` (JSONL audit trail)
-- Stored in memory-mcp (recalls on next startup)
-- Traced in agent-mesh (with `supervisor_reasoning` and `supervisor_confidence`)
+**Setup:**
 
-## Mode 3: Standalone HTTP
-
-Agent-mesh runs as a standalone HTTP server without a supervisor. Agents connect via HTTP directly.
-
-```
-Agent A ──HTTP──> agent-mesh :9090 ──> upstream MCP servers
-Agent B ──HTTP──┘
+```bash
+cd ~/agent7
+python -m backend.app.services.supervisor --config supervisor.yaml
 ```
 
-**How to run:**
+With `mesh_process.enabled: true`, the supervisor spawns agent-mesh on startup, monitors health, and restarts it on crash.
+
+```yaml
+supervisor:
+  mesh_url: http://localhost:9090
+  mesh_process:
+    enabled: true
+    command: agent-mesh
+    config: /path/to/config.yaml
+```
+
+External agents connect via HTTP:
+
+```bash
+curl -X POST http://localhost:9090/tool/filesystem.write_file \
+  -H "Authorization: Bearer agent:my-script" \
+  -d '{"params":{"path":"/tmp/output.txt","content":"hello"}}'
+```
+
+## Config 4: External agent only
+
+Standard HTTP proxy mode. No MCP, no supervisor.
+
+```
+agent-mesh :9090 ──> tools
+     │
+Agent (HTTP) ──────┘
+```
+
+**Setup:**
+
 ```bash
 agent-mesh --config config.yaml
 ```
 
-**Pros:** Simple, persistent.
-**Cons:** No automatic approval resolution. All `human_approval` requests wait for manual resolution via CLI (`mesh approve`) or HTTP API.
+Any HTTP client can call `POST /tool/{name}`, query traces, manage approvals. Works with LangChain, CrewAI, custom scripts, cron jobs.
 
-## Mode 4: Multiple instances (port isolation)
+## Config 5: Claude + external agent (the real mesh)
 
-Each agent gets its own agent-mesh instance on a different port.
+Claude and external agents share the same agent-mesh instance. One set of policies, one trace store, one approval queue.
 
 ```
-Claude Code ──stdio──> agent-mesh :9090
-Agent B ──HTTP──────> agent-mesh :9091
+Claude Code ──stdio──> agent-mesh :9090 ──> tools
+                           │
+Agent B ─────────HTTP──────┘
 ```
 
-**How to run:**
-```bash
-# Instance 1 (config: port 9090)
-agent-mesh --config config-a.yaml
+**This works today.** Claude spawns agent-mesh, the external agent connects via HTTP to `:9090`. Both are governed by the same policies.
 
-# Instance 2
-agent-mesh --config config-b.yaml --port 9091
+Add a supervisor and you get Config 2 with extra agents — everything goes through one mesh.
+
+---
+
+## Configs that don't work
+
+### Config 6: Claude + supervisor (active spawn)
+
+Both Claude and the supervisor try to spawn agent-mesh on port `:9090`.
+
+```
+Claude ──stdio──> agent-mesh :9090     ← process A
+supervisor ──spawn──> agent-mesh :9090 ← process B  💥 bind: address already in use
 ```
 
-**Pros:** Full isolation, no conflicts.
-**Cons:** No shared governance — each instance has its own policies, traces, approvals. Run one supervisor per instance if needed.
+The second instance crashes with exit code 1. The supervisor restart loop detects the crash and spawns again — infinite crash loop.
 
-## Port conflicts
+**Fix:** Set `mesh_process.enabled: false` in the supervisor config (→ Config 2).
 
-Two agent-mesh instances on the same port will fail. This happens when:
+### Config 7: Two Claude sessions
 
-- Claude Code launches agent-mesh (`:9090`), and the supervisor also spawns one
-- Two Claude sessions with the same agent-mesh MCP config run simultaneously
+Two Claude Code sessions with the same MCP config both spawn agent-mesh.
+
+```
+Claude session 1 ──stdio──> agent-mesh :9090  ← process A
+Claude session 2 ──stdio──> agent-mesh :9090  ← process B  💥 conflict
+```
+
+The second instance's HTTP background server fails silently (MCP stdio still works, but `:9090` is taken). Traces and approvals are split across two isolated instances.
+
+**Fix:** Use different configs with different ports, or run only one Claude session with agent-mesh.
 
 **Detection:**
+
 ```bash
 lsof -i :9090
 ```
 
-**Prevention:** Use supervisor-managed mode (Mode 2). The supervisor checks if agent-mesh is already running before spawning. If Claude already launched agent-mesh, the supervisor simply connects to it instead of spawning a new one.
+---
 
-## Architecture summary
-
-| Component | Role | Lifecycle |
-|-----------|------|-----------|
-| **Ollama** | Local LLM | System daemon (always running) |
-| **agent-mesh** | Policy + approval + trace proxy | Managed by supervisor (or Claude) |
-| **filesystem, gmail, ollama-mcp, memory-mcp** | Upstream MCP servers | Launched by agent-mesh as subprocesses |
-| **supervisor** | Approval evaluator + process manager | Persistent (user launches once) |
-| **Claude Code** | AI agent | Ephemeral (user sessions) |
+## Decision flow: which config to use
 
 ```
-                    supervisor (persistent)
-                         │
-                    ┌────┴────┐
-                    │ spawn   │ poll/resolve
-                    ▼         ▼
-              agent-mesh :9090
-              ┌──────────────────────────────────┐
-              │  registry · policy · approval    │
-              │  trace · grants · rate limiting  │
-              └──┬───┬───┬───┬───┬───┬──────────┘
-                 │   │   │   │   │   │
-                 ▼   ▼   ▼   ▼   ▼   ▼
-           fs  gmail weather ollama memory ...
-                 ▲               ▲      ▲
-                 │               │      │
-              Claude Code    supervisor (LLM eval + decision store)
+Do you use Claude/Cursor?
+  │
+  ├─ Yes, just Claude ──────────────────────────→ Config 1 (embedded)
+  │
+  ├─ Yes, Claude + auto-approve ────────────────→ Config 2 (passive supervisor)
+  │
+  ├─ Yes, Claude + external agents ─────────────→ Config 5 (shared mesh)
+  │
+  └─ No
+       │
+       ├─ Want auto-approve / overnight runs ───→ Config 3 (supervisor standalone)
+       │
+       └─ Just HTTP proxy ─────────────────────→ Config 4 (standalone)
 ```
+
+## Component lifecycle
+
+| Component | Who starts it | Who stops it | Persists across sessions |
+|-----------|--------------|-------------|------------------------|
+| **Ollama** | System daemon | System | Yes |
+| **agent-mesh** | Claude (config 1/2/5) or supervisor (config 3) | Dies with parent | No (unless daemon mode) |
+| **Upstream MCP servers** | agent-mesh (subprocesses) | Die with agent-mesh | No |
+| **Supervisor** | User (terminal) | User (Ctrl+C) | Yes (as long as terminal lives) |
+| **Claude Code** | User | User | No |
+
+## Future: daemon mode
+
+The ideal architecture — a single persistent agent-mesh instance shared by everyone:
+
+```
+                    agent-mesh serve (daemon, persistent)
+                    ┌─────────────────────────────────────┐
+Claude ──connect──> │                                     │──> tools
+Agent B ───HTTP───> │  registry · policy · approval       │
+Agent C ───HTTP───> │  trace · grants · rate limiting     │
+                    └──────────────┬──────────────────────┘
+                                   │
+                            supervisor (poll)
+```
+
+Two new subcommands:
+
+- **`agent-mesh serve`** — run as a persistent daemon (HTTP + manages upstream MCP servers)
+- **`agent-mesh connect --url http://localhost:9090`** — thin MCP stdio proxy for Claude Code
+
+This solves both Config 6 (port conflict) and Config 2's limitation (mesh dies with Claude). Claude uses `connect` instead of spawning the full agent-mesh. The supervisor manages the daemon lifecycle.
+
+| Feature | Status |
+|---------|--------|
+| Config 1: Embedded MCP | Done |
+| Config 2: Passive supervisor | Done |
+| Config 3: Active supervisor | Done |
+| Config 4: Standalone HTTP | Done |
+| Config 5: Shared mesh | Done |
+| `supervisor.enabled` (hide approval tools) | Done |
+| `agent-mesh serve` (daemon) | Not yet |
+| `agent-mesh connect` (MCP-to-HTTP proxy) | Not yet |
