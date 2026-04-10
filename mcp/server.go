@@ -62,13 +62,14 @@ type MCPProp struct {
 
 // Server runs the MCP stdio protocol.
 type Server struct {
-	Registry   *registry.Registry
-	Policy     *policy.Engine
-	Traces     *trace.Store
-	Approvals  *approval.Store
-	Handler    *proxy.Handler
-	MCPManager *Manager
-	AgentID    string // agent ID for policy evaluation in MCP mode
+	Registry       *registry.Registry
+	Policy         *policy.Engine
+	Traces         *trace.Store
+	Approvals      *approval.Store
+	Handler        *proxy.Handler
+	MCPManager     *Manager
+	AgentID        string // agent ID for policy evaluation in MCP mode
+	SupervisorMode bool   // when true, hide approval.* virtual tools from agents
 }
 
 // Run starts the MCP server on stdin/stdout.
@@ -173,26 +174,28 @@ func (s *Server) handleToolsList() map[string]any {
 		})
 	}
 
-	// Append virtual approval tools (no policy evaluation)
-	mcpTools = append(mcpTools, MCPTool{
-		Name:        "approval.resolve",
-		Description: "Approve or deny a pending approval request",
-		InputSchema: MCPSchema{
-			Type: "object",
-			Properties: map[string]MCPProp{
-				"id":       {Type: "string", Description: "Approval ID (full or 8-char prefix)"},
-				"decision": {Type: "string", Description: "Decision: approve or deny"},
+	// Append virtual approval tools (unless supervisor mode — supervisor handles approvals)
+	if !s.SupervisorMode {
+		mcpTools = append(mcpTools, MCPTool{
+			Name:        "approval.resolve",
+			Description: "Approve or deny a pending approval request",
+			InputSchema: MCPSchema{
+				Type: "object",
+				Properties: map[string]MCPProp{
+					"id":       {Type: "string", Description: "Approval ID (full or 8-char prefix)"},
+					"decision": {Type: "string", Description: "Decision: approve or deny"},
+				},
+				Required: []string{"id", "decision"},
 			},
-			Required: []string{"id", "decision"},
-		},
-	}, MCPTool{
-		Name:        "approval.pending",
-		Description: "List all pending approval requests",
-		InputSchema: MCPSchema{
-			Type:       "object",
-			Properties: map[string]MCPProp{},
-		},
-	})
+		}, MCPTool{
+			Name:        "approval.pending",
+			Description: "List all pending approval requests",
+			InputSchema: MCPSchema{
+				Type:       "object",
+				Properties: map[string]MCPProp{},
+			},
+		})
+	}
 
 	// Append virtual grant tools
 	mcpTools = append(mcpTools, MCPTool{
@@ -251,8 +254,14 @@ func (s *Server) handleToolsCall(params map[string]any) (any, *rpcError) {
 	// Virtual tools — handled before registry lookup, no policy evaluation
 	switch toolName {
 	case "approval.resolve":
+		if s.SupervisorMode {
+			return nil, &rpcError{Code: -32601, Message: "approval.resolve is disabled — supervisor mode is active, approvals are handled by the external supervisor"}
+		}
 		return s.handleApprovalResolve(arguments)
 	case "approval.pending":
+		if s.SupervisorMode {
+			return nil, &rpcError{Code: -32601, Message: "approval.pending is disabled — supervisor mode is active"}
+		}
 		return s.handleApprovalPending()
 	case "grant.create":
 		return s.handleGrantCreate(arguments)
@@ -365,6 +374,16 @@ func (s *Server) handleToolsCall(params map[string]any) (any, *rpcError) {
 		pending.TraceID = entry.TraceID
 
 		shortID := pending.ID[:8]
+
+		if s.SupervisorMode {
+			slog.Info("approval pending (supervisor will resolve)",
+				"approval_id", shortID, "agent", s.AgentID, "tool", toolName)
+
+			// Block until supervisor resolves — agent waits
+			resolution := <-pending.Result
+			return s.handleResolution(pending, entry, resolution, toolName, arguments)
+		}
+
 		slog.Info("approval pending (non-blocking)",
 			"approval_id", shortID, "agent", s.AgentID, "tool", toolName,
 			"resolve_via", fmt.Sprintf("approval.resolve {id: %s, decision: approve} OR mesh approve %s", shortID, shortID))
@@ -509,6 +528,76 @@ func (s *Server) handleApprovalResolve(args map[string]any) (any, *rpcError) {
 	return map[string]any{
 		"content": []map[string]any{
 			{"type": "text", "text": string(resultJSON)},
+		},
+	}, nil
+}
+
+// handleResolution processes a supervisor's resolution — replays the tool call if approved.
+func (s *Server) handleResolution(
+	pending *approval.PendingApproval,
+	entry trace.Entry,
+	resolution approval.Resolution,
+	toolName string,
+	arguments map[string]any,
+) (any, *rpcError) {
+	s.Traces.Update(entry.TraceID, func(e *trace.Entry) {
+		e.ApprovalStatus = string(resolution.Status)
+		e.ApprovedBy = resolution.ResolvedBy
+		e.ApprovalMs = time.Since(pending.CreatedAt).Milliseconds()
+		e.SupervisorReasoning = resolution.Reasoning
+		e.SupervisorConfidence = resolution.Confidence
+	})
+
+	switch resolution.Status {
+	case approval.StatusApproved:
+		tool := s.Registry.Get(toolName)
+		if tool == nil {
+			return map[string]any{
+				"content": []map[string]any{
+					{"type": "text", "text": fmt.Sprintf("Approved by supervisor but tool %s no longer exists.", toolName)},
+				},
+			}, nil
+		}
+		result, statusCode, err := s.Handler.Forward(tool, arguments, entry.TraceID)
+		s.Traces.Update(entry.TraceID, func(e *trace.Entry) {
+			e.StatusCode = statusCode
+			e.LatencyMs = time.Since(pending.CreatedAt).Milliseconds()
+			if err != nil {
+				e.Error = err.Error()
+			}
+		})
+		if err != nil {
+			return map[string]any{
+				"content": []map[string]any{
+					{"type": "text", "text": fmt.Sprintf("Approved by supervisor but backend error: %s", err.Error())},
+				},
+			}, nil
+		}
+		resultJSON, _ := json.MarshalIndent(result, "", "  ")
+		return map[string]any{
+			"content": []map[string]any{
+				{"type": "text", "text": string(resultJSON)},
+			},
+		}, nil
+
+	case approval.StatusDenied:
+		return map[string]any{
+			"content": []map[string]any{
+				{"type": "text", "text": fmt.Sprintf("Denied by supervisor: %s", resolution.Reasoning)},
+			},
+		}, nil
+
+	case approval.StatusTimeout:
+		return map[string]any{
+			"content": []map[string]any{
+				{"type": "text", "text": "Approval timed out — no supervisor or human resolved it."},
+			},
+		}, nil
+	}
+
+	return map[string]any{
+		"content": []map[string]any{
+			{"type": "text", "text": fmt.Sprintf("Unexpected approval status: %s", resolution.Status)},
 		},
 	}, nil
 }

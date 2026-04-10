@@ -108,6 +108,9 @@ func main() {
 		slog.Info("approval notify webhook configured", "url", cfg.Approval.NotifyURL)
 	}
 	slog.Info("approval store ready", "timeout", approvalTimeout)
+	if cfg.Supervisor.IsEnabled() {
+		slog.Info("supervisor mode enabled — approval.resolve hidden from agents")
+	}
 
 	// 6. Build rate limiter
 	limiter := ratelimit.New()
@@ -202,13 +205,14 @@ func main() {
 		}()
 
 		server := &mcp.Server{
-			Registry:   reg,
-			Policy:     pol,
-			Traces:     traces,
-			Approvals:  approvals,
-			Handler:    handler,
-			MCPManager: mcpManager,
-			AgentID:    *mcpAgent,
+			Registry:       reg,
+			Policy:         pol,
+			Traces:         traces,
+			Approvals:      approvals,
+			Handler:        handler,
+			MCPManager:     mcpManager,
+			AgentID:        *mcpAgent,
+			SupervisorMode: cfg.Supervisor.IsEnabled(),
 		}
 		if err := server.Run(); err != nil {
 			slog.Error("MCP server failed", "error", err)

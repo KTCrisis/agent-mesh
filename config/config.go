@@ -18,9 +18,21 @@ type Config struct {
 	CLITools   []CLIToolConfig   `yaml:"cli_tools"`
 }
 
-// SupervisorConfig controls content isolation for external supervisor agents.
+// SupervisorConfig controls supervisor mode and content isolation.
 type SupervisorConfig struct {
+	Enabled       *bool `yaml:"enabled"`        // when true, hide approval.* tools from agents
 	ExposeContent *bool `yaml:"expose_content"`
+}
+
+// IsEnabled returns whether supervisor mode is active.
+// When enabled, approval.resolve and approval.pending are hidden from agents
+// so that only the external supervisor can resolve approvals.
+// Defaults to false when not explicitly set.
+func (s SupervisorConfig) IsEnabled() bool {
+	if s.Enabled == nil {
+		return false
+	}
+	return *s.Enabled
 }
 
 // ShouldExposeContent returns whether raw param content should be exposed.
