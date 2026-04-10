@@ -9,13 +9,14 @@ import (
 )
 
 type Config struct {
-	Port       int               `yaml:"port"`
-	TraceFile  string            `yaml:"trace_file"`
-	Approval   ApprovalConfig    `yaml:"approval"`
-	Supervisor SupervisorConfig  `yaml:"supervisor"`
-	Policies   []Policy          `yaml:"policies"`
-	MCPServers []MCPServerConfig `yaml:"mcp_servers"`
-	CLITools   []CLIToolConfig   `yaml:"cli_tools"`
+	Port         int               `yaml:"port"`
+	TraceFile    string            `yaml:"trace_file"`
+	OTELEndpoint string            `yaml:"otel_endpoint"` // "stdout" or "http://localhost:4318" (OTLP HTTP)
+	Approval     ApprovalConfig    `yaml:"approval"`
+	Supervisor   SupervisorConfig  `yaml:"supervisor"`
+	Policies     []Policy          `yaml:"policies"`
+	MCPServers   []MCPServerConfig `yaml:"mcp_servers"`
+	CLITools     []CLIToolConfig   `yaml:"cli_tools"`
 }
 
 // SupervisorConfig controls supervisor mode and content isolation.

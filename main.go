@@ -26,11 +26,12 @@ import (
 var (
 	version = "dev"
 	commit  = "none"
+	date    = "unknown"
 )
 
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "version" {
-		fmt.Printf("agent-mesh %s (%s)\n", version, commit)
+		fmt.Printf("agent-mesh %s (%s) built %s\n", version, commit, date)
 		return
 	}
 
@@ -40,6 +41,7 @@ func main() {
 		return
 	}
 
+	showVersion := flag.Bool("version", false, "Print version and exit")
 	configPath := flag.String("config", "config.yaml", "Path to config YAML")
 	specURL := flag.String("openapi", "", "OpenAPI spec URL to load")
 	backendURL := flag.String("backend", "", "Backend base URL (overrides spec)")
@@ -47,6 +49,11 @@ func main() {
 	mcpMode := flag.Bool("mcp", false, "Run as MCP server (stdio JSON-RPC instead of HTTP)")
 	mcpAgent := flag.String("mcp-agent", "claude", "Agent ID for MCP mode policy evaluation")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Printf("agent-mesh %s (%s) built %s\n", version, commit, date)
+		return
+	}
 
 	// Setup structured logging
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})))
@@ -98,6 +105,14 @@ func main() {
 	} else {
 		traces = trace.NewStore(10000)
 		slog.Info("trace store ready", "mode", "in-memory")
+	}
+
+	// 4b. OTEL exporter
+	if cfg.OTELEndpoint != "" {
+		otelExp := trace.NewOTELExporter(cfg.OTELEndpoint)
+		traces.OTEL = otelExp
+		defer otelExp.Close()
+		slog.Info("OTEL exporter ready", "endpoint", cfg.OTELEndpoint)
 	}
 
 	// 5. Build approval store + notifier

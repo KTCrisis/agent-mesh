@@ -54,6 +54,9 @@ type Store struct {
 	filePath    string
 	fileSize    int64
 	maxFileSize int64 // 0 = no rotation
+
+	// OTEL exporter (nil = disabled)
+	OTEL *OTELExporter
 }
 
 // NewStore creates an in-memory trace store.
@@ -121,6 +124,11 @@ func (s *Store) Record(e Entry) {
 	// Evict oldest if over max
 	if len(s.entries) > s.maxSize {
 		s.entries = s.entries[len(s.entries)-s.maxSize:]
+	}
+
+	// Export to OTEL (async to not block Record)
+	if s.OTEL != nil {
+		go s.OTEL.Export(e)
 	}
 
 	// Append to JSONL file

@@ -395,6 +395,23 @@ cat traces.jsonl | jq 'select(.policy == "deny")'
 cat traces.jsonl | jq 'select(.approval_status == "approved")'
 ```
 
+### OpenTelemetry export
+
+Export every trace as OTLP spans — to a file, stdout, or any OTLP-compatible backend (Jaeger, Grafana Tempo, Datadog).
+
+```yaml
+# JSONL file (zero infra, scriptable)
+otel_endpoint: /path/to/traces-otel.jsonl
+
+# OTLP HTTP (Jaeger, Tempo, OTEL Collector)
+otel_endpoint: http://localhost:4318
+
+# Debug (spans on stderr)
+otel_endpoint: stdout
+```
+
+Zero new dependencies. Each span includes `agent.id`, `tool.name`, `policy.action`, `approval.*`, and `llm.token.*` attributes. See [docs/otel.md](docs/otel.md) for details.
+
 ### Tool discovery
 
 Auto-discover tools from upstream sources and generate starter policies:
@@ -582,7 +599,8 @@ agent-mesh/
 ├── approval/
 │   └── store.go           # Channel-based approval store with timeout
 ├── trace/
-│   └── store.go           # In-memory trace store + JSONL persistence
+│   ├── store.go           # In-memory trace store + JSONL persistence
+│   └── otel.go            # OpenTelemetry OTLP exporter (file, stdout, HTTP)
 ├── cmd/mesh/              # CLI binary (pending/approve/deny/watch)
 ├── examples/              # Example config files
 │   ├── filesystem.yaml    # Filesystem governance (read/write/deny)
@@ -591,6 +609,7 @@ agent-mesh/
 │   └── cli-tools/         # CLI tool governance (terraform, kubectl, gh)
 └── docs/
     ├── agent-landscape.md # AI agent CLI landscape survey
+    ├── otel.md            # OpenTelemetry export guide
     └── positioning.md     # Market positioning and comparisons
 ```
 
@@ -613,7 +632,7 @@ go test ./proxy/ -v        # One package
 | `exec` | 30 | Arg validation, shell injection, timeout, output cap, env isolation |
 | `grant` | 8 | Create, check, revoke, expiration, cleanup, glob matching |
 | `ratelimit` | 8 | Per-minute, total budget, loop detection, agent isolation |
-| `trace` | 14 | Record, filter, eviction, stats, JSONL persistence, supervisor fields |
+| `trace` | 14 | Record, filter, eviction, stats, JSONL persistence, supervisor fields, OTEL export |
 | `mcp` | 33 | Client lifecycle, timeouts, SSE transport, approval flow, supervisor mode |
 | `supervisor` | 30 | Content redaction, type detection, injection detection (positive/negative) |
 | `approval` | 17 | Submit, resolve, timeout, prefix match, concurrent, notify |
@@ -634,7 +653,7 @@ go test ./proxy/ -v        # One package
 - [x] Async approval (202 + poll via MCP virtual tools, HTTP API)
 - [x] CLI tool governance (terraform, kubectl, etc. — 3 modes, arg validation, secure exec)
 - [x] Supervisor agent protocol (structured verdicts, content isolation, injection detection)
-- [ ] OpenTelemetry trace export
+- [x] OpenTelemetry trace export (OTLP JSON — file, stdout, HTTP)
 - [ ] Dashboard UI
 
 ## Why "Agent Mesh"
