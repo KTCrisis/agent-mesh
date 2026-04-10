@@ -250,6 +250,8 @@ func (h *Handler) handleToolCall(w http.ResponseWriter, r *http.Request) {
 			h.Traces.Update(entry.TraceID, func(e *trace.Entry) {
 				e.StatusCode = statusCode
 				e.LatencyMs = totalMs
+				e.EstimatedInputTokens = trace.EstimateTokens(req.Params)
+				e.EstimatedOutputTokens = trace.EstimateTokens(result)
 				if err != nil {
 					e.Error = err.Error()
 				}
@@ -300,14 +302,16 @@ func (h *Handler) handleToolCall(w http.ResponseWriter, r *http.Request) {
 
 	// 5. Trace
 	entry := trace.Entry{
-		TraceID:    traceID,
-		AgentID:    agentID,
-		Tool:       toolName,
-		Params:     req.Params,
-		Policy:     "allow",
-		PolicyRule: decision.Rule,
-		StatusCode: statusCode,
-		LatencyMs:  latency,
+		TraceID:               traceID,
+		AgentID:               agentID,
+		Tool:                  toolName,
+		Params:                req.Params,
+		Policy:                "allow",
+		PolicyRule:            decision.Rule,
+		StatusCode:            statusCode,
+		LatencyMs:             latency,
+		EstimatedInputTokens:  trace.EstimateTokens(req.Params),
+		EstimatedOutputTokens: trace.EstimateTokens(result),
 	}
 	if err != nil {
 		entry.Error = err.Error()

@@ -328,6 +328,8 @@ func (s *Server) handleToolsCall(params map[string]any) (any, *rpcError) {
 				result, statusCode, err := s.Handler.Forward(tool, arguments, "")
 				s.Traces.Update(entry.TraceID, func(e *trace.Entry) {
 					e.StatusCode = statusCode
+					e.EstimatedInputTokens = trace.EstimateTokens(arguments)
+					e.EstimatedOutputTokens = trace.EstimateTokens(result)
 					if err != nil {
 						e.Error = err.Error()
 					}
@@ -405,12 +407,14 @@ func (s *Server) handleToolsCall(params map[string]any) (any, *rpcError) {
 
 	// Trace
 	entry := trace.Entry{
-		AgentID:    s.AgentID,
-		Tool:       toolName,
-		Params:     arguments,
-		Policy:     "allow",
-		PolicyRule: decision.Rule,
-		StatusCode: statusCode,
+		AgentID:               s.AgentID,
+		Tool:                  toolName,
+		Params:                arguments,
+		Policy:                "allow",
+		PolicyRule:            decision.Rule,
+		StatusCode:            statusCode,
+		EstimatedInputTokens:  trace.EstimateTokens(arguments),
+		EstimatedOutputTokens: trace.EstimateTokens(result),
 	}
 	if err != nil {
 		entry.Error = err.Error()
@@ -510,6 +514,8 @@ func (s *Server) handleApprovalResolve(args map[string]any) (any, *rpcError) {
 			e.ApprovedBy = resolvedBy
 			e.ApprovalMs = time.Since(pa.CreatedAt).Milliseconds()
 			e.StatusCode = statusCode
+			e.EstimatedInputTokens = trace.EstimateTokens(pa.Params)
+			e.EstimatedOutputTokens = trace.EstimateTokens(result)
 			if err != nil {
 				e.Error = err.Error()
 			}
@@ -562,6 +568,8 @@ func (s *Server) handleResolution(
 		s.Traces.Update(entry.TraceID, func(e *trace.Entry) {
 			e.StatusCode = statusCode
 			e.LatencyMs = time.Since(pending.CreatedAt).Milliseconds()
+			e.EstimatedInputTokens = trace.EstimateTokens(arguments)
+			e.EstimatedOutputTokens = trace.EstimateTokens(result)
 			if err != nil {
 				e.Error = err.Error()
 			}

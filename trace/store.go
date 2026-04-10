@@ -36,6 +36,10 @@ type Entry struct {
 	// Supervisor fields (populated when resolved by a supervisor agent)
 	SupervisorReasoning  string  `json:"supervisor_reasoning,omitempty"`
 	SupervisorConfidence float64 `json:"supervisor_confidence,omitempty"`
+
+	// Token estimation (chars/4 heuristic)
+	EstimatedInputTokens  int `json:"estimated_input_tokens,omitempty"`
+	EstimatedOutputTokens int `json:"estimated_output_tokens,omitempty"`
 }
 
 // Store is a thread-safe trace store with optional JSONL file persistence.
@@ -183,11 +187,13 @@ func (s *Store) Stats() map[string]int {
 	defer s.mu.RUnlock()
 
 	stats := map[string]int{
-		"total":          len(s.entries),
-		"allowed":        0,
-		"denied":         0,
-		"human_approval": 0,
-		"errors":         0,
+		"total":                   len(s.entries),
+		"allowed":                 0,
+		"denied":                  0,
+		"human_approval":          0,
+		"errors":                  0,
+		"estimated_input_tokens":  0,
+		"estimated_output_tokens": 0,
 	}
 	for _, e := range s.entries {
 		switch e.Policy {
@@ -201,6 +207,8 @@ func (s *Store) Stats() map[string]int {
 		if e.Error != "" {
 			stats["errors"]++
 		}
+		stats["estimated_input_tokens"] += e.EstimatedInputTokens
+		stats["estimated_output_tokens"] += e.EstimatedOutputTokens
 	}
 	return stats
 }
