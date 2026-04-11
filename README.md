@@ -334,6 +334,16 @@ curl -X DELETE http://localhost:9090/grants/a1b2c3d4
 
 Grants expire automatically. No config change needed. Every call that uses a grant is traced with the grant ID.
 
+**Scope — grants only bypass `human_approval`.** Tools marked `deny` in policy remain blocked even with a matching grant. This is intentional: `deny` is a hard boundary that requires a policy edit, not a runtime sudo.
+
+| Policy action | Grant bypasses? |
+|---|---|
+| `allow` | N/A (already permitted) |
+| `human_approval` | ✅ yes — approval skipped |
+| `deny` | ❌ no — policy edit required |
+
+Think of it as `sudo` with a time window: it skips the password prompt for allowed commands, but it doesn't grant root on commands your `sudoers` explicitly forbids.
+
 ### CLI tool governance
 
 Wrap any CLI binary (terraform, kubectl, docker, gh, aws…) behind policy, approval, and tracing. Three modes:
