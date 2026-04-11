@@ -55,9 +55,49 @@ type MCPSchema struct {
 }
 
 // MCPProp describes a single property in an MCP tool schema.
+//
+// When MCPProp is unmarshalled from an upstream MCP server response, the full
+// raw JSON is preserved in Raw so it can be passed through verbatim on
+// re-export. This keeps schema constructs like "anyOf", "items", "enum" and
+// nested object schemas intact — agent-mesh stays a pure proxy and never has
+// to understand JSON Schema itself. Virtual/local tools can still be built
+// with a plain {Type, Description} literal; in that case Raw is empty and
+// MarshalJSON falls back to the shallow form.
 type MCPProp struct {
-	Type        string `json:"type"`
-	Description string `json:"description"`
+	Type        string          `json:"type,omitempty"`
+	Description string          `json:"description,omitempty"`
+	Raw         json.RawMessage `json:"-"`
+}
+
+// UnmarshalJSON preserves the raw JSON of a property while also decoding the
+// shallow Type and Description fields for the registry's internal use.
+func (p *MCPProp) UnmarshalJSON(data []byte) error {
+	p.Raw = make(json.RawMessage, len(data))
+	copy(p.Raw, data)
+
+	var shallow struct {
+		Type        string `json:"type"`
+		Description string `json:"description"`
+	}
+	// A shallow decode failure is not fatal — we still have Raw for passthrough.
+	_ = json.Unmarshal(data, &shallow)
+	p.Type = shallow.Type
+	p.Description = shallow.Description
+	return nil
+}
+
+// MarshalJSON emits the preserved raw schema when available (upstream tools)
+// and otherwise falls back to the shallow {type, description} form used by
+// locally-defined virtual tools.
+func (p MCPProp) MarshalJSON() ([]byte, error) {
+	if len(p.Raw) > 0 {
+		return p.Raw, nil
+	}
+	shallow := struct {
+		Type        string `json:"type,omitempty"`
+		Description string `json:"description,omitempty"`
+	}{Type: p.Type, Description: p.Description}
+	return json.Marshal(shallow)
 }
 
 // Server runs the MCP stdio protocol.
@@ -148,15 +188,23 @@ func (s *Server) handleToolsList() map[string]any {
 		var required []string
 
 		for _, p := range t.Params {
-			propType := p.Type
-			if propType == "" || propType == "integer" || propType == "number" {
+			if len(p.RawSchema) > 0 {
+				// Upstream MCP tool: pass the raw schema through verbatim so
+				// constructs like anyOf, items, enum and nested objects stay
+				// intact for downstream agents. agent-mesh does not interpret
+				// or rebuild JSON Schema — it just proxies it.
+				props[p.Name] = MCPProp{Raw: p.RawSchema}
+			} else {
+				// Virtual/local tool, OpenAPI or CLI import: build a shallow
+				// {type, description} property from the registry fields.
+				propType := p.Type
 				if propType == "" {
 					propType = "string"
 				}
-			}
-			props[p.Name] = MCPProp{
-				Type:        propType,
-				Description: fmt.Sprintf("%s parameter (%s)", p.Name, p.In),
+				props[p.Name] = MCPProp{
+					Type:        propType,
+					Description: fmt.Sprintf("%s parameter (%s)", p.Name, p.In),
+				}
 			}
 			if p.Required {
 				required = append(required, p.Name)

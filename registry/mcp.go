@@ -1,5 +1,7 @@
 package registry
 
+import "encoding/json"
+
 // MCPToolDef describes a tool discovered from an upstream MCP server.
 // This is the registry's input format — callers convert from their MCP types to this.
 type MCPToolDef struct {
@@ -17,10 +19,11 @@ func NewMCPToolDef(name, description string, properties map[string]MCPPropDef, r
 	var params []Param
 	for pName, prop := range properties {
 		params = append(params, Param{
-			Name:     pName,
-			In:       "body",
-			Type:     prop.Type,
-			Required: requiredSet[pName],
+			Name:      pName,
+			In:        "body",
+			Type:      prop.Type,
+			Required:  requiredSet[pName],
+			RawSchema: prop.RawSchema,
 		})
 	}
 	return MCPToolDef{
@@ -31,8 +34,13 @@ func NewMCPToolDef(name, description string, properties map[string]MCPPropDef, r
 }
 
 // MCPPropDef is a minimal property definition for MCP tool schema conversion.
+// RawSchema, when set, is the verbatim JSON Schema of the property as received
+// from the upstream MCP server. Callers that have access to the raw schema
+// should populate this so the MCP server's re-export layer can pass through
+// constructs like "anyOf", "items", "enum" and nested objects intact.
 type MCPPropDef struct {
-	Type string
+	Type      string
+	RawSchema json.RawMessage
 }
 
 // LoadMCP registers tools from an upstream MCP server into the registry.

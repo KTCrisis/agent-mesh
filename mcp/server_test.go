@@ -589,3 +589,166 @@ func TestServerApprovalFallbackNoStore(t *testing.T) {
 		t.Errorf("expected fallback text, got: %s", text)
 	}
 }
+
+// TestUpstreamSchemaPassthrough verifies that JSON Schema constructs received
+// from an upstream MCP server — anyOf, items, enum, nested objects — survive
+// the round-trip through agent-mesh's registry and re-export layer.
+//
+// Regression test for the silent downgrade where optional parameters declared
+// as `list[dict] | None` upstream were rewritten to {type: "string"} on
+// tools/list re-export, causing Pydantic validation errors at the upstream
+// server when clients faithfully serialised the argument as a string.
+func TestUpstreamSchemaPassthrough(t *testing.T) {
+	// Raw upstream tools/list response for a fictional tool with three kinds
+	// of non-trivial parameter schemas: array, anyOf[array, null] and enum.
+	upstreamJSON := []byte(`{
+		"tools": [{
+			"name": "create_diagram",
+			"description": "Create a diagram",
+			"inputSchema": {
+				"type": "object",
+				"properties": {
+					"nodes": {
+						"type": "array",
+						"items": {"type": "object", "additionalProperties": true},
+						"description": "List of nodes"
+					},
+					"subgraphs": {
+						"anyOf": [
+							{"type": "array", "items": {"type": "object"}},
+							{"type": "null"}
+						],
+						"default": null,
+						"description": "Optional groups"
+					},
+					"theme": {
+						"type": "string",
+						"enum": ["default", "dark", "professional"],
+						"default": "default"
+					}
+				},
+				"required": ["nodes"]
+			}
+		}]
+	}`)
+
+	var wrapper struct {
+		Tools []MCPTool `json:"tools"`
+	}
+	if err := json.Unmarshal(upstreamJSON, &wrapper); err != nil {
+		t.Fatalf("unmarshal upstream: %v", err)
+	}
+	if len(wrapper.Tools) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(wrapper.Tools))
+	}
+	tool := wrapper.Tools[0]
+
+	// Verify the raw property JSON was preserved during upstream unmarshal.
+	for _, name := range []string{"nodes", "subgraphs", "theme"} {
+		prop := tool.InputSchema.Properties[name]
+		if len(prop.Raw) == 0 {
+			t.Errorf("property %q: Raw schema not preserved after unmarshal", name)
+		}
+	}
+
+	// Convert into a registry MCPToolDef the way cmd/agent-mesh/main.go does,
+	// then register and verify the RawSchema is carried on the Param.
+	props := make(map[string]registry.MCPPropDef, len(tool.InputSchema.Properties))
+	for name, p := range tool.InputSchema.Properties {
+		props[name] = registry.MCPPropDef{Type: p.Type, RawSchema: p.Raw}
+	}
+	def := registry.NewMCPToolDef(tool.Name, tool.Description, props, tool.InputSchema.Required)
+
+	reg := registry.New()
+	reg.LoadMCP("upstream", []registry.MCPToolDef{def})
+
+	registered := reg.All()
+	var registeredTool *registry.Tool
+	for _, rt := range registered {
+		if rt.Name == "upstream.create_diagram" {
+			registeredTool = rt
+			break
+		}
+	}
+	if registeredTool == nil {
+		t.Fatalf("upstream.create_diagram not registered")
+	}
+	foundRaw := 0
+	for _, p := range registeredTool.Params {
+		if len(p.RawSchema) > 0 {
+			foundRaw++
+		}
+	}
+	if foundRaw != 3 {
+		t.Errorf("expected 3 params with RawSchema, got %d", foundRaw)
+	}
+
+	// Run handleToolsList via a minimal server and check the emitted schema.
+	pol := policy.NewEngine([]config.Policy{
+		{Name: "allow-all", Agent: "*", Rules: []config.Rule{{Tools: []string{"*"}, Action: "allow"}}},
+	})
+	srv := &Server{
+		Registry:  reg,
+		Policy:    pol,
+		Traces:    trace.NewStore(100),
+		Approvals: approval.NewStore(time.Second),
+	}
+
+	resp := srv.handleToolsList()
+	reEmitted, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatalf("marshal tools/list response: %v", err)
+	}
+	var parsed struct {
+		Tools []struct {
+			Name        string                     `json:"name"`
+			InputSchema struct {
+				Type       string                     `json:"type"`
+				Properties map[string]json.RawMessage `json:"properties"`
+				Required   []string                   `json:"required"`
+			} `json:"inputSchema"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal(reEmitted, &parsed); err != nil {
+		t.Fatalf("unmarshal re-emitted response: %v", err)
+	}
+
+	var createTool *struct {
+		Name        string `json:"name"`
+		InputSchema struct {
+			Type       string                     `json:"type"`
+			Properties map[string]json.RawMessage `json:"properties"`
+			Required   []string                   `json:"required"`
+		} `json:"inputSchema"`
+	}
+	for i := range parsed.Tools {
+		if parsed.Tools[i].Name == "upstream.create_diagram" {
+			createTool = &parsed.Tools[i]
+			break
+		}
+	}
+	if createTool == nil {
+		t.Fatalf("upstream.create_diagram not in re-emitted tools/list")
+	}
+
+	// The anyOf in `subgraphs` must survive verbatim — this is the regression.
+	subgraphsJSON := string(createTool.InputSchema.Properties["subgraphs"])
+	if !strings.Contains(subgraphsJSON, `"anyOf"`) {
+		t.Errorf("subgraphs lost anyOf on re-export: %s", subgraphsJSON)
+	}
+	if strings.Contains(subgraphsJSON, `"type":"string"`) || strings.Contains(subgraphsJSON, `"type": "string"`) {
+		t.Errorf("subgraphs was silently downgraded to type:string: %s", subgraphsJSON)
+	}
+
+	// The items in `nodes` must still be present.
+	nodesJSON := string(createTool.InputSchema.Properties["nodes"])
+	if !strings.Contains(nodesJSON, `"items"`) {
+		t.Errorf("nodes lost items on re-export: %s", nodesJSON)
+	}
+
+	// The enum in `theme` must still be present.
+	themeJSON := string(createTool.InputSchema.Properties["theme"])
+	if !strings.Contains(themeJSON, `"enum"`) {
+		t.Errorf("theme lost enum on re-export: %s", themeJSON)
+	}
+}

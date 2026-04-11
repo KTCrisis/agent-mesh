@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"encoding/json"
 	"sync"
 	"time"
 )
@@ -35,9 +36,17 @@ type CLIToolMeta struct {
 // Param describes a single parameter for a tool.
 type Param struct {
 	Name     string `json:"name"`
-	In       string `json:"in"`       // path, query, body
+	In       string `json:"in"` // path, query, body
 	Type     string `json:"type"`
 	Required bool   `json:"required"`
+
+	// RawSchema preserves the raw JSON Schema of this parameter when the tool
+	// was imported from an upstream MCP server. When present, the MCP server's
+	// tools/list handler emits this verbatim instead of rebuilding a shallow
+	// {type, description} object — this keeps schema constructs like "anyOf",
+	// "items", "enum" and nested objects intact for agents downstream.
+	// Empty for locally-defined virtual tools and for OpenAPI/CLI imports.
+	RawSchema json.RawMessage `json:"-"`
 }
 
 // Registry holds all discovered tools. Safe for concurrent use.

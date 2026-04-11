@@ -267,12 +267,21 @@ func main() {
 }
 
 // convertMCPTools bridges mcp.MCPTool → registry.MCPToolDef.
+//
+// The raw JSON schema of each property is passed through verbatim via
+// MCPPropDef.RawSchema so that constructs like "anyOf", "items" and "enum"
+// survive the round-trip from the upstream MCP server to the agent-mesh
+// tools/list re-export. Without this, optional parameters using anyOf
+// would be silently downgraded to {type: "string"} on export.
 func convertMCPTools(tools []mcp.MCPTool) []registry.MCPToolDef {
 	defs := make([]registry.MCPToolDef, 0, len(tools))
 	for _, t := range tools {
 		props := make(map[string]registry.MCPPropDef, len(t.InputSchema.Properties))
 		for name, p := range t.InputSchema.Properties {
-			props[name] = registry.MCPPropDef{Type: p.Type}
+			props[name] = registry.MCPPropDef{
+				Type:      p.Type,
+				RawSchema: p.Raw,
+			}
 		}
 		defs = append(defs, registry.NewMCPToolDef(t.Name, t.Description, props, t.InputSchema.Required))
 	}
