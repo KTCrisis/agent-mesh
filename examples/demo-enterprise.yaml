@@ -25,7 +25,7 @@ mcp_servers:
 
   - name: memory
     transport: stdio
-    command: /home/fluxart/memory-mcp-go/memory-mcp-go
+    command: /home/fluxart/go/bin/mem7
 
   - name: git
     transport: stdio
