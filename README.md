@@ -9,36 +9,57 @@ Works with Claude Code, Cursor, LangChain, CrewAI, or any agent that uses HTTP, 
 
 ## Architecture
 
+```mermaid
+flowchart LR
+    subgraph Agents["Agents"]
+        A1["Claude Code / Cursor"]
+        A2["LangChain / CrewAI"]
+        A3["Any HTTP agent"]
+    end
+
+    subgraph Mesh["agent-mesh (sidecar proxy)"]
+        direction TB
+        REG["Registry<br/>(tools)"]
+        RL["Rate limiter<br/>+ loop detect"]
+        POL["Policy engine<br/>(glob, conditions)"]
+        FWD["Forward"]
+        APP["Approval store"]
+        GRT["Grant store<br/>(sudo for agents)"]
+        TRC["Trace store<br/>(JSONL + in-memory)"]
+        OTEL["OTEL exporter<br/>(file / stdout / OTLP)"]
+
+        REG --> RL --> POL --> FWD
+        POL -.approval.-> APP
+        POL -.bypass.-> GRT
+        FWD --> TRC
+        TRC --> OTEL
+    end
+
+    subgraph Upstream["Upstream tools"]
+        U1["MCP servers<br/>(stdio + SSE)"]
+        U2["REST APIs<br/>(OpenAPI specs)"]
+        U3["CLI binaries<br/>(terraform, kubectl, gh)"]
+    end
+
+    subgraph Observability["Observability"]
+        O1["Jaeger / Tempo /<br/>Datadog / OTLP HTTP"]
+        O2["traces-otel.jsonl"]
+    end
+
+    A1 -- MCP --> Mesh
+    A2 -- HTTP --> Mesh
+    A3 -- HTTP --> Mesh
+
+    FWD --> U1
+    FWD --> U2
+    FWD --> U3
+
+    OTEL --> O1
+    OTEL --> O2
 ```
-                           agent-mesh (sidecar proxy)
-                    ┌──────────────────────────────────────────┐
-                    │                                          │
- ┌──────────┐      │  ┌──────────┐  ┌────────┐  ┌─────────┐  │      ┌──────────────────┐
- │  Claude   │─MCP─│─>│ Registry │─>│ Policy │─>│ Forward │──│─────>│ MCP servers       │
- │  Code     │<────│──│ (tools)  │  │ Engine │  │         │<─│─────<│ (filesystem,      │
- └──────────┘      │  └──────────┘  └────────┘  └─────────┘  │      │  gmail, weather,  │
-                    │       ^            │            │         │      │  flights, ...)    │
- ┌──────────┐      │       │            v            │         │      └──────────────────┘
- │  CrewAI  │─HTTP─│─>     │       ┌────────┐        │         │
- │  agents  │<────│──      │       │Approval│        │         │      ┌──────────────────┐
- └──────────┘      │       │       │ Store  │        │         │      │ REST APIs         │
-                    │       │       └────────┘        │──────── │─────>│ (OpenAPI specs)   │
- ┌──────────┐      │       │            │            │         │      └──────────────────┘
- │  Any     │─HTTP─│─>     │            v            │         │
- │  agent   │<────│──      │       ┌────────┐        │         │
- └──────────┘      │       │       │ Trace  │        │         │
-                    │       │       │ Store  │        │         │
-                    │       │       └────────┘        │         │
-                    │       │                                   │
-                    │  Import:          Export:                 │
-                    │  - OpenAPI spec   - MCP server (stdio)   │
-                    │  - MCP servers    - HTTP proxy (:port)   │
-                    │    (stdio + SSE)                          │
-                    │  - CLI tools                              │
-                    │    (terraform,                            │
-                    │     kubectl, ...)                         │
-                    └──────────────────────────────────────────┘
-```
+
+**Import:** OpenAPI specs · MCP servers (stdio + SSE) · CLI binaries
+**Export:** MCP server (stdio) · HTTP proxy (`:port`) · OTLP traces
 
 ### Request flow
 
@@ -122,8 +143,19 @@ Requires Go 1.24+:
 ```bash
 git clone https://github.com/KTCrisis/agent-mesh.git
 cd agent-mesh
-go build -o agent-mesh .
+
+# Quick build (binary in current directory, no version info)
+go build -o agent-mesh ./cmd/agent-mesh
+
+# Or via Makefile — embeds version, commit and build date via ldflags
+make build                 # ./agent-mesh
+make install               # $HOME/go/bin/agent-mesh (make sure it's on your PATH)
+
+./agent-mesh version
+# agent-mesh v0.7.0 (abcdef1) built 2026-04-11T09:33:00Z
 ```
+
+`make install` writes the binary to `$HOME/go/bin/agent-mesh` with version metadata baked in, so `agent-mesh version` reports the exact build.
 
 ## Quick start
 
@@ -540,6 +572,7 @@ Result: Claude searches flights, checks weather, estimates budgets — all trace
 | `GET` | `/tools` | List all registered tools |
 | `GET` | `/mcp-servers` | List connected upstream MCP servers |
 | `GET` | `/traces` | Query trace history (`?agent=...&tool=...`) |
+| `GET` | `/otel-traces` | Query OTEL spans recorded on this instance (OTLP JSON) |
 | `GET` | `/approvals` | List approvals (`?status=pending`, `?tool=filesystem.*`) |
 | `GET` | `/approvals/{id}` | Approval detail with agent context (recent traces, active grants) |
 | `POST` | `/approvals/{id}/approve` | Approve (optional: `reasoning`, `confidence`) |
@@ -549,27 +582,61 @@ Result: Claude searches flights, checks weather, estimates budgets — all trace
 | `DELETE` | `/grants/{id}` | Revoke a grant |
 | `GET` | `/health` | Health check and stats |
 
-## CLI flags
+## Commands & flags
+
+### Subcommands
 
 ```bash
-./agent-mesh [flags]
+agent-mesh version                          # Print version, commit, build date
+agent-mesh discover [flags]                 # Discover tools + generate starter policy
+```
+
+`discover` inspects either an OpenAPI spec or the MCP servers declared in a config, lists every tool it finds, and optionally emits a safe starter policy (reads allowed, writes denied):
+
+```bash
+agent-mesh discover --openapi https://petstore.swagger.io/v2/swagger.json
+agent-mesh discover --config config.yaml --generate-policy > policy.yaml
+```
+
+### Run flags
+
+```bash
+agent-mesh [flags]
 ```
 
 | Flag | Default | Description |
 |------|---------|-------------|
+| `--version` | | Print version and exit |
 | `--config` | `config.yaml` | Path to YAML config |
 | `--openapi` | | OpenAPI spec URL |
 | `--backend` | | Backend base URL override |
 | `--port` | from config or `9090` | Port override |
-| `--mcp` | `false` | Export MCP mode (stdio) |
+| `--mcp` | `false` | Export MCP mode (stdio JSON-RPC instead of HTTP) |
 | `--mcp-agent` | `claude` | Agent ID for MCP-mode policy evaluation |
+
+### Health & liveness
+
+The HTTP admin API is always served on `--port` (default `9090`), in both HTTP and MCP modes.
+
+```bash
+curl http://localhost:9090/health
+
+# Probe-friendly
+curl -fsS http://localhost:9090/health > /dev/null && echo ok
+```
+
+Suitable as a Docker `HEALTHCHECK`, systemd watchdog, or Kubernetes liveness/readiness probe. The same port exposes `/tools`, `/mcp-servers`, `/traces`, `/otel-traces`, `/approvals`, `/grants` — see the **API** section below.
 
 ## Project structure
 
 ```
 agent-mesh/
-├── main.go                # Entry point, wires everything
-├── discover.go            # Discover subcommand + policy generation
+├── cmd/
+│   ├── agent-mesh/        # Main binary — entry point, wires everything
+│   │   ├── main.go
+│   │   └── discover.go    # `discover` subcommand + policy generation
+│   └── mesh/              # Approval CLI (pending/approve/deny/watch)
+│       └── main.go
 ├── config/
 │   └── config.go          # YAML config + policy + MCP server definitions
 ├── registry/
@@ -601,7 +668,6 @@ agent-mesh/
 ├── trace/
 │   ├── store.go           # In-memory trace store + JSONL persistence
 │   └── otel.go            # OpenTelemetry OTLP exporter (file, stdout, HTTP)
-├── cmd/mesh/              # CLI binary (pending/approve/deny/watch)
 ├── examples/              # Example config files
 │   ├── filesystem.yaml    # Filesystem governance (read/write/deny)
 │   ├── petstore.yaml      # OpenAPI import demo (Petstore)

@@ -7,10 +7,10 @@ BIN      := $(HOME)/go/bin/agent-mesh
 .PHONY: build install test lint clean release-dry
 
 build:
-	go build -ldflags "$(LDFLAGS)" -o agent-mesh .
+	go build -ldflags "$(LDFLAGS)" -o agent-mesh ./cmd/agent-mesh
 
 install:
-	go build -ldflags "$(LDFLAGS)" -o $(BIN) .
+	go build -ldflags "$(LDFLAGS)" -o $(BIN) ./cmd/agent-mesh
 	@echo "installed $(BIN)"
 
 test:

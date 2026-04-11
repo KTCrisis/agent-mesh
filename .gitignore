@@ -3,8 +3,8 @@
 *.dll
 *.so
 *.dylib
-agent-mesh
-mesh
+/agent-mesh
+/mesh
 .DS_Store
 
 # IDE
