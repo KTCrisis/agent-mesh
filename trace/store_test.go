@@ -48,6 +48,29 @@ func TestQueryFilterTool(t *testing.T) {
 	}
 }
 
+func TestQueryEmptyReturnsNonNilSlice(t *testing.T) {
+	// Regression: Query used to return a nil slice when no entries matched,
+	// which the JSON encoder serializes as `null` and broke TypeScript clients
+	// doing `traces.map(...)`. Must return an empty slice instead.
+	s := NewStore(100)
+	entries := s.Query("", "", 10)
+	if entries == nil {
+		t.Fatal("Query on empty store returned nil, expected empty slice")
+	}
+	if len(entries) != 0 {
+		t.Fatalf("Query on empty store returned %d entries, expected 0", len(entries))
+	}
+
+	s.Record(Entry{AgentID: "bot", Tool: "x", Policy: "allow"})
+	entries = s.Query("other-bot", "", 10)
+	if entries == nil {
+		t.Fatal("Query with no matches returned nil, expected empty slice")
+	}
+	if len(entries) != 0 {
+		t.Fatalf("Query with no matches returned %d entries, expected 0", len(entries))
+	}
+}
+
 func TestQueryLimit(t *testing.T) {
 	s := NewStore(100)
 	for i := 0; i < 20; i++ {

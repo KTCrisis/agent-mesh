@@ -246,6 +246,7 @@ func TestHandleMCPServersWithForwarder(t *testing.T) {
 
 func TestHandleHealth(t *testing.T) {
 	handler, _ := setupHandler(t)
+	handler.Version = "v1.2.3"
 
 	req := httptest.NewRequest("GET", "/health", nil)
 	w := httptest.NewRecorder()
@@ -260,6 +261,57 @@ func TestHandleHealth(t *testing.T) {
 	json.NewDecoder(w.Body).Decode(&health)
 	if health["status"] != "ok" {
 		t.Errorf("status = %v", health["status"])
+	}
+	if health["version"] != "v1.2.3" {
+		t.Errorf("version = %v, want v1.2.3", health["version"])
+	}
+}
+
+func TestHandleVersion(t *testing.T) {
+	handler, _ := setupHandler(t)
+	handler.Version = "v1.2.3"
+	handler.Commit = "abc123"
+	handler.BuildDate = "2026-04-12T10:00:00Z"
+
+	req := httptest.NewRequest("GET", "/version", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != 200 {
+		t.Fatalf("status = %d", w.Code)
+	}
+
+	var v map[string]string
+	json.NewDecoder(w.Body).Decode(&v)
+	if v["version"] != "v1.2.3" {
+		t.Errorf("version = %q, want v1.2.3", v["version"])
+	}
+	if v["commit"] != "abc123" {
+		t.Errorf("commit = %q, want abc123", v["commit"])
+	}
+	if v["date"] != "2026-04-12T10:00:00Z" {
+		t.Errorf("date = %q, want 2026-04-12T10:00:00Z", v["date"])
+	}
+}
+
+func TestHandleVersionDefaults(t *testing.T) {
+	// Unset fields should default to "dev"/"none"/"unknown".
+	handler, _ := setupHandler(t)
+
+	req := httptest.NewRequest("GET", "/version", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	var v map[string]string
+	json.NewDecoder(w.Body).Decode(&v)
+	if v["version"] != "dev" {
+		t.Errorf("version = %q, want dev", v["version"])
+	}
+	if v["commit"] != "none" {
+		t.Errorf("commit = %q, want none", v["commit"])
+	}
+	if v["date"] != "unknown" {
+		t.Errorf("date = %q, want unknown", v["date"])
 	}
 }
 

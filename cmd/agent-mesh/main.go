@@ -165,6 +165,9 @@ func main() {
 	handler.RateLimiter = limiter
 	handler.Grants = grants
 	handler.SupervisorCfg = cfg.Supervisor
+	handler.Version = version
+	handler.Commit = commit
+	handler.BuildDate = date
 	if len(cfg.CLITools) > 0 {
 		handler.CLIRunner = &meshexec.Runner{MaxOutputBytes: 1 << 20}
 	}
@@ -244,6 +247,7 @@ func main() {
 			"traces", fmt.Sprintf("GET  http://localhost%s/traces", addr),
 			"otel_traces", fmt.Sprintf("GET  http://localhost%s/otel-traces", addr),
 			"health", fmt.Sprintf("GET  http://localhost%s/health", addr),
+			"version", fmt.Sprintf("GET  http://localhost%s/version", addr),
 		)
 
 		// Graceful shutdown: close MCP clients on SIGINT/SIGTERM

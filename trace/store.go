@@ -161,7 +161,7 @@ func (s *Store) Query(agent string, tool string, limit int) []Entry {
 		limit = 100
 	}
 
-	var result []Entry
+	result := make([]Entry, 0)
 	// Iterate in reverse (most recent first)
 	for i := len(s.entries) - 1; i >= 0 && len(result) < limit; i-- {
 		e := s.entries[i]

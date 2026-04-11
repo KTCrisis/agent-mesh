@@ -58,6 +58,11 @@ type Handler struct {
 	MCPForwarder  MCPForwarder
 	CLIRunner     *meshexec.Runner
 	SupervisorCfg config.SupervisorConfig
+
+	// Build info (populated from main.go ldflags-injected vars).
+	Version   string
+	Commit    string
+	BuildDate string
 }
 
 func NewHandler(reg *registry.Registry, pol *policy.Engine, traces *trace.Store) *Handler {
@@ -98,6 +103,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleRevokeGrant(w, r)
 	case r.Method == "GET" && r.URL.Path == "/health":
 		h.handleHealth(w, r)
+	case r.Method == "GET" && r.URL.Path == "/version":
+		h.handleVersion(w, r)
 	default:
 		http.NotFound(w, r)
 	}
@@ -505,9 +512,32 @@ func (h *Handler) handleMCPServers(w http.ResponseWriter, _ *http.Request) {
 
 func (h *Handler) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, 200, map[string]any{
-		"status": "ok",
-		"tools":  len(h.Registry.All()),
-		"traces": h.Traces.Stats(),
+		"status":  "ok",
+		"tools":   len(h.Registry.All()),
+		"traces":  h.Traces.Stats(),
+		"version": h.Version,
+	})
+}
+
+// handleVersion returns the build info injected at compile time via ldflags.
+// Empty strings default to "dev"/"none"/"unknown" so the response is always populated.
+func (h *Handler) handleVersion(w http.ResponseWriter, _ *http.Request) {
+	version := h.Version
+	if version == "" {
+		version = "dev"
+	}
+	commit := h.Commit
+	if commit == "" {
+		commit = "none"
+	}
+	date := h.BuildDate
+	if date == "" {
+		date = "unknown"
+	}
+	writeJSON(w, 200, map[string]string{
+		"version": version,
+		"commit":  commit,
+		"date":    date,
 	})
 }
 
