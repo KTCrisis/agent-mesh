@@ -2,7 +2,10 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -15,6 +18,7 @@ type Config struct {
 	Approval     ApprovalConfig    `yaml:"approval"`
 	Supervisor   SupervisorConfig  `yaml:"supervisor"`
 	Policies     []Policy          `yaml:"policies"`
+	PolicyDir    string            `yaml:"policy_dir,omitempty"` // directory of per-agent policy files
 	MCPServers   []MCPServerConfig `yaml:"mcp_servers"`
 	CLITools     []CLIToolConfig   `yaml:"cli_tools"`
 }
@@ -119,10 +123,74 @@ func Load(path string) (*Config, error) {
 	if cfg.Approval.TimeoutSeconds == 0 {
 		cfg.Approval.TimeoutSeconds = 300
 	}
+	if err := cfg.loadPolicyDir(path); err != nil {
+		return nil, err
+	}
+	if err := cfg.validatePolicyNames(); err != nil {
+		return nil, err
+	}
 	if err := cfg.validateCLITools(); err != nil {
 		return nil, err
 	}
 	return &cfg, nil
+}
+
+// loadPolicyDir loads per-agent policy files from the configured directory.
+// Each *.yaml file in the directory is parsed as a single Policy and appended
+// to c.Policies (after any inline policies, sorted by filename).
+func (c *Config) loadPolicyDir(configPath string) error {
+	if c.PolicyDir == "" {
+		return nil
+	}
+
+	dir := c.PolicyDir
+	if !filepath.IsAbs(dir) {
+		dir = filepath.Join(filepath.Dir(configPath), dir)
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			slog.Warn("policy_dir does not exist, skipping", "path", dir)
+			return nil
+		}
+		return fmt.Errorf("read policy_dir %q: %w", dir, err)
+	}
+
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".yaml") {
+			continue
+		}
+
+		data, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			return fmt.Errorf("read policy file %s: %w", e.Name(), err)
+		}
+
+		var p Policy
+		if err := yaml.Unmarshal(data, &p); err != nil {
+			return fmt.Errorf("parse policy file %s: %w", e.Name(), err)
+		}
+		if p.Name == "" {
+			return fmt.Errorf("policy file %s: missing required field 'name'", e.Name())
+		}
+
+		c.Policies = append(c.Policies, p)
+	}
+
+	return nil
+}
+
+// validatePolicyNames checks for duplicate policy names across all sources.
+func (c *Config) validatePolicyNames() error {
+	seen := make(map[string]bool, len(c.Policies))
+	for _, p := range c.Policies {
+		if seen[p.Name] {
+			return fmt.Errorf("duplicate policy name %q", p.Name)
+		}
+		seen[p.Name] = true
+	}
+	return nil
 }
 
 func (c *Config) validateCLITools() error {

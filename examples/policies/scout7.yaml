@@ -1,0 +1,26 @@
+name: scout7
+agent: "scout7"
+rules:
+  # Search + fetch — core read loop
+  - tools: ["searxng.*"]
+    action: allow
+  - tools: ["fetch.*"]
+    action: allow
+
+  # Ollama — extraction + evaluation
+  - tools: ["ollama.*"]
+    action: allow
+
+  # Memory — read and write (autonomous agent)
+  - tools: ["memory.*"]
+    action: allow
+
+  # arch7 — create diagrams, no modify
+  - tools: ["arch7.create_diagram", "arch7.get_diagram_info"]
+    action: allow
+  - tools: ["arch7.modify_diagram"]
+    action: deny
+
+  # Everything else — denied
+  - tools: ["*"]
+    action: deny

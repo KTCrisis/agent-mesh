@@ -1,0 +1,148 @@
+name: claude
+agent: "claude"
+rules:
+  # -- Filesystem --
+
+  # Read operations — always allowed
+  - tools:
+      [
+        "filesystem.directory_tree",
+        "filesystem.get_file_info",
+        "filesystem.list_allowed_directories",
+        "filesystem.list_directory",
+        "filesystem.list_directory_with_sizes",
+        "filesystem.read_file",
+        "filesystem.read_media_file",
+        "filesystem.read_multiple_files",
+        "filesystem.read_text_file",
+        "filesystem.search_files",
+      ]
+    action: allow
+
+  # Write operations — human approval required
+  - tools:
+      [
+        "filesystem.edit_file",
+        "filesystem.write_file",
+        "filesystem.create_directory",
+      ]
+    action: human_approval
+
+  # Move/rename — denied (destructive, hard to undo)
+  - tools: ["filesystem.move_file"]
+    action: deny
+
+  # -- Gmail (3 comptes: ktcrisis, perso, flux7) --
+  # Les regles s'appliquent a tous les namespaces gmail-* via glob.
+
+  # Destructive — denied (regle en PREMIER car first-match-wins)
+  - tools:
+      [
+        "gmail-*.gmail_delete_email",
+        "gmail-*.gmail_delete_label",
+        "gmail-*.gmail_move_to_trash",
+        "gmail-*.gmail_recover_from_trash",
+        "gmail-*.gmail_modify_email",
+        "gmail-*.gmail_set_vacation_responder",
+        "gmail-*.gmail_update_forwarding",
+        "gmail-*.gmail_batch_*",
+      ]
+    action: deny
+
+  # Read operations — always allowed
+  - tools:
+      [
+        "gmail-*.gmail_read_email",
+        "gmail-*.gmail_list_emails",
+        "gmail-*.gmail_list_emails_with_advanced_filters",
+        "gmail-*.gmail_list_email_labels",
+        "gmail-*.gmail_get_forwarding",
+        "gmail-*.gmail_get_vacation_responder",
+      ]
+    action: allow
+
+  # Low-risk write — human approval
+  - tools:
+      [
+        "gmail-*.gmail_draft_email",
+        "gmail-*.gmail_create_label",
+        "gmail-*.gmail_update_label",
+        "gmail-*.gmail_mark_as_read",
+        "gmail-*.gmail_mark_as_unread",
+        "gmail-*.gmail_archive_email",
+      ]
+    action: human_approval
+
+  # Send email — human approval
+  - tools: ["gmail-*.gmail_send_email"]
+    action: human_approval
+
+  # -- Weather + Geocoding (read-only) --
+  - tools: ["weather.*"]
+    action: allow
+
+  # -- Flights (search only) --
+  - tools: ["flights.*"]
+    action: allow
+
+  # -- Travel utilities (read-only) --
+  - tools: ["travel.*"]
+    action: allow
+
+  # -- arch7 (diagram generator) --
+
+  # Read/info — always allowed
+  - tools: ["arch7.get_diagram_info"]
+    action: allow
+
+  # Create/modify diagrams — allowed (local file generation)
+  - tools: ["arch7.create_diagram", "arch7.mermaid_to_excalidraw"]
+    action: allow
+
+  # Modify existing diagram — human approval (destructive edit)
+  - tools: ["arch7.modify_diagram"]
+    action: human_approval
+
+  # -- Ollama (local LLM) --
+  - tools: ["ollama.*"]
+    action: allow
+
+  # -- Memory (shared agent memory) --
+  - tools: ["memory.*"]
+    action: allow
+
+  # -- SearXNG (web search) --
+  - tools: ["searxng.*"]
+    action: allow
+
+  # -- Fetch (URL reader) --
+  - tools: ["fetch.*"]
+    action: allow
+
+  # -- Git --
+
+  # Read commands — always allowed
+  - tools: ["git.status", "git.log", "git.diff", "git.show", "git.branch"]
+    action: allow
+
+  # Tag list — allowed (read-only)
+  - tools: ["git.tag"]
+    action: allow
+
+  # -- GitHub CLI --
+
+  # Read commands — always allowed
+  - tools: ["gh.pr", "gh.issue", "gh.repo"]
+    action: allow
+
+  # -- Docker (strict: only declared commands) --
+  - tools: ["docker.*"]
+    action: allow
+
+  # -- sysinfo (local stack overview, read-only) --
+  - tools: ["sysinfo.*"]
+    action: allow
+
+  # -- Terraform — read-only --
+  - tools: ["terraform.version", "terraform.providers", "terraform.show", "terraform.state"]
+    action: allow

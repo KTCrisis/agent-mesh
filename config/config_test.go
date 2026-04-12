@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -281,6 +282,263 @@ func TestLoadFileNotFound(t *testing.T) {
 	_, err := Load("/nonexistent/path.yaml")
 	if err == nil {
 		t.Error("expected error for missing file")
+	}
+}
+
+// --- policy_dir tests ---
+
+func TestPolicyDir_Basic(t *testing.T) {
+	dir := t.TempDir()
+	policyDir := filepath.Join(dir, "policies")
+	os.Mkdir(policyDir, 0o755)
+
+	os.WriteFile(filepath.Join(policyDir, "scout7.yaml"), []byte(`
+name: scout7
+agent: "scout7"
+rules:
+  - tools: ["searxng.*"]
+    action: allow
+  - tools: ["*"]
+    action: deny
+`), 0o644)
+
+	os.WriteFile(filepath.Join(policyDir, "default.yaml"), []byte(`
+name: default
+agent: "*"
+rules:
+  - tools: ["*"]
+    action: deny
+`), 0o644)
+
+	cfgFile := filepath.Join(dir, "config.yaml")
+	os.WriteFile(cfgFile, []byte(`
+port: 9090
+policy_dir: ./policies
+`), 0o644)
+
+	cfg, err := Load(cfgFile)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.Policies) != 2 {
+		t.Fatalf("policies = %d, want 2", len(cfg.Policies))
+	}
+	// os.ReadDir sorts by name: default before scout7
+	if cfg.Policies[0].Name != "default" {
+		t.Errorf("first policy = %q, want default", cfg.Policies[0].Name)
+	}
+	if cfg.Policies[1].Name != "scout7" {
+		t.Errorf("second policy = %q, want scout7", cfg.Policies[1].Name)
+	}
+}
+
+func TestPolicyDir_MergeWithInline(t *testing.T) {
+	dir := t.TempDir()
+	policyDir := filepath.Join(dir, "policies")
+	os.Mkdir(policyDir, 0o755)
+
+	os.WriteFile(filepath.Join(policyDir, "scout7.yaml"), []byte(`
+name: scout7
+agent: "scout7"
+rules:
+  - tools: ["*"]
+    action: deny
+`), 0o644)
+
+	cfgFile := filepath.Join(dir, "config.yaml")
+	os.WriteFile(cfgFile, []byte(`
+policy_dir: ./policies
+policies:
+  - name: claude
+    agent: "claude"
+    rules:
+      - tools: ["*"]
+        action: allow
+`), 0o644)
+
+	cfg, err := Load(cfgFile)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.Policies) != 2 {
+		t.Fatalf("policies = %d, want 2", len(cfg.Policies))
+	}
+	// Inline first, then dir
+	if cfg.Policies[0].Name != "claude" {
+		t.Errorf("first = %q, want claude (inline)", cfg.Policies[0].Name)
+	}
+	if cfg.Policies[1].Name != "scout7" {
+		t.Errorf("second = %q, want scout7 (dir)", cfg.Policies[1].Name)
+	}
+}
+
+func TestPolicyDir_DuplicateName(t *testing.T) {
+	dir := t.TempDir()
+	policyDir := filepath.Join(dir, "policies")
+	os.Mkdir(policyDir, 0o755)
+
+	os.WriteFile(filepath.Join(policyDir, "scout7.yaml"), []byte(`
+name: scout7
+agent: "scout7"
+rules:
+  - tools: ["*"]
+    action: deny
+`), 0o644)
+
+	cfgFile := filepath.Join(dir, "config.yaml")
+	os.WriteFile(cfgFile, []byte(`
+policy_dir: ./policies
+policies:
+  - name: scout7
+    agent: "scout7"
+    rules:
+      - tools: ["*"]
+        action: allow
+`), 0o644)
+
+	_, err := Load(cfgFile)
+	if err == nil {
+		t.Fatal("expected error for duplicate policy name")
+	}
+}
+
+func TestPolicyDir_DuplicateInDir(t *testing.T) {
+	dir := t.TempDir()
+	policyDir := filepath.Join(dir, "policies")
+	os.Mkdir(policyDir, 0o755)
+
+	os.WriteFile(filepath.Join(policyDir, "01-foo.yaml"), []byte(`
+name: foo
+agent: "foo"
+rules:
+  - tools: ["*"]
+    action: deny
+`), 0o644)
+
+	os.WriteFile(filepath.Join(policyDir, "02-foo.yaml"), []byte(`
+name: foo
+agent: "foo"
+rules:
+  - tools: ["*"]
+    action: allow
+`), 0o644)
+
+	cfgFile := filepath.Join(dir, "config.yaml")
+	os.WriteFile(cfgFile, []byte(`policy_dir: ./policies`), 0o644)
+
+	_, err := Load(cfgFile)
+	if err == nil {
+		t.Fatal("expected error for duplicate policy name in dir")
+	}
+}
+
+func TestPolicyDir_EmptyDir(t *testing.T) {
+	dir := t.TempDir()
+	policyDir := filepath.Join(dir, "policies")
+	os.Mkdir(policyDir, 0o755)
+
+	cfgFile := filepath.Join(dir, "config.yaml")
+	os.WriteFile(cfgFile, []byte(`
+policy_dir: ./policies
+policies:
+  - name: inline
+    agent: "*"
+    rules:
+      - tools: ["*"]
+        action: deny
+`), 0o644)
+
+	cfg, err := Load(cfgFile)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.Policies) != 1 {
+		t.Fatalf("policies = %d, want 1", len(cfg.Policies))
+	}
+}
+
+func TestPolicyDir_MissingDir(t *testing.T) {
+	dir := t.TempDir()
+	cfgFile := filepath.Join(dir, "config.yaml")
+	os.WriteFile(cfgFile, []byte(`policy_dir: ./nonexistent`), 0o644)
+
+	cfg, err := Load(cfgFile)
+	if err != nil {
+		t.Fatalf("Load: %v (expected warning, not error)", err)
+	}
+	if len(cfg.Policies) != 0 {
+		t.Errorf("policies = %d, want 0", len(cfg.Policies))
+	}
+}
+
+func TestPolicyDir_NotSet(t *testing.T) {
+	yaml := `
+policies:
+  - name: test
+    agent: "*"
+    rules:
+      - tools: ["*"]
+        action: allow
+`
+	f := writeTempFile(t, yaml)
+	cfg, err := Load(f)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.Policies) != 1 {
+		t.Errorf("policies = %d, want 1", len(cfg.Policies))
+	}
+}
+
+func TestPolicyDir_MissingName(t *testing.T) {
+	dir := t.TempDir()
+	policyDir := filepath.Join(dir, "policies")
+	os.Mkdir(policyDir, 0o755)
+
+	os.WriteFile(filepath.Join(policyDir, "bad.yaml"), []byte(`
+agent: "test"
+rules:
+  - tools: ["*"]
+    action: deny
+`), 0o644)
+
+	cfgFile := filepath.Join(dir, "config.yaml")
+	os.WriteFile(cfgFile, []byte(`policy_dir: ./policies`), 0o644)
+
+	_, err := Load(cfgFile)
+	if err == nil {
+		t.Fatal("expected error for missing name in policy file")
+	}
+}
+
+func TestPolicyDir_RateLimit(t *testing.T) {
+	dir := t.TempDir()
+	policyDir := filepath.Join(dir, "policies")
+	os.Mkdir(policyDir, 0o755)
+
+	os.WriteFile(filepath.Join(policyDir, "scout7.yaml"), []byte(`
+name: scout7
+agent: "scout7"
+rate_limit:
+  max_per_minute: 30
+  max_total: 1000
+rules:
+  - tools: ["*"]
+    action: allow
+`), 0o644)
+
+	cfgFile := filepath.Join(dir, "config.yaml")
+	os.WriteFile(cfgFile, []byte(`policy_dir: ./policies`), 0o644)
+
+	cfg, err := Load(cfgFile)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Policies[0].RateLimit == nil {
+		t.Fatal("rate_limit is nil")
+	}
+	if cfg.Policies[0].RateLimit.MaxPerMinute != 30 {
+		t.Errorf("max_per_minute = %d, want 30", cfg.Policies[0].RateLimit.MaxPerMinute)
 	}
 }
 

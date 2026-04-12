@@ -244,6 +244,49 @@ policies:
 
 **Fail closed:** no matching rule = deny.
 
+### Per-agent policy files
+
+Split policies into individual files — one per agent, one per concern:
+
+```yaml
+# config.yaml — infrastructure only
+mcp_servers:
+  - name: filesystem
+    transport: stdio
+    command: npx
+    args: ["-y", "@modelcontextprotocol/server-filesystem", "/home/me"]
+
+policy_dir: ./policies   # load all *.yaml from this directory
+```
+
+```yaml
+# policies/scout7.yaml — one agent, one file
+name: scout7
+agent: "scout7"
+rate_limit:
+  max_per_minute: 30
+rules:
+  - tools: ["searxng.*", "fetch.*", "ollama.*", "memory.*"]
+    action: allow
+  - tools: ["arch7.create_diagram"]
+    action: allow
+  - tools: ["*"]
+    action: deny
+```
+
+```yaml
+# policies/default.yaml — catch-all
+name: default
+agent: "*"
+rules:
+  - tools: ["*"]
+    action: deny
+```
+
+Files are loaded alphabetically and appended after any inline `policies:` in the main config. Both sources compose — inline first, then directory. Duplicate policy names produce an error.
+
+Add an agent: drop a file. Revoke: delete it. Each agent's access is self-contained.
+
 ### Rate limiting
 
 Per-agent call limits to prevent runaway agents and infinite loops:
@@ -682,7 +725,8 @@ agent-mesh/
 │   ├── filesystem.yaml    # Filesystem governance (read/write/deny)
 │   ├── petstore.yaml      # OpenAPI import demo (Petstore)
 │   ├── travel-agent.yaml  # Multi-tool travel agent
-│   └── cli-tools/         # CLI tool governance (terraform, kubectl, gh)
+│   ├── cli-tools/         # CLI tool governance (terraform, kubectl, gh)
+│   └── policies/          # Per-agent policy files (used with policy_dir)
 └── docs/
     ├── agent-landscape.md # AI agent CLI landscape survey
     ├── otel.md            # OpenTelemetry export guide
@@ -697,11 +741,11 @@ go test ./... -race        # With race detector
 go test ./proxy/ -v        # One package
 ```
 
-222 tests across 14 packages:
+253 tests across 14 packages:
 
 | Package | Tests | Covers |
 |---------|-------|--------|
-| `config` | 16 | YAML parsing, defaults, MCP servers, conditions, CLI tools, supervisor config |
+| `config` | 25 | YAML parsing, defaults, MCP servers, conditions, CLI tools, supervisor config, policy_dir |
 | `registry` | 16 | CRUD, loading, namespacing, concurrent access, CLI modes, ResolveCLI |
 | `policy` | 9 | Allow/deny, conditions, wildcards, globs, fail-closed |
 | `proxy` | 36 | REST, MCP, CLI calls, approval flows, supervisor protocol, content redaction |
@@ -730,6 +774,7 @@ go test ./proxy/ -v        # One package
 - [x] CLI tool governance (terraform, kubectl, etc. — 3 modes, arg validation, secure exec)
 - [x] Supervisor agent protocol (structured verdicts, content isolation, injection detection)
 - [x] OpenTelemetry trace export (OTLP JSON — file, stdout, HTTP)
+- [x] Per-agent policy files (`policy_dir` — one YAML per agent)
 - [ ] Dashboard UI
 
 ## Why "Agent Mesh"
