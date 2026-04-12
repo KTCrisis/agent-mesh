@@ -48,6 +48,7 @@ func main() {
 	port := flag.Int("port", 0, "Port override (default from config or 9090)")
 	mcpMode := flag.Bool("mcp", false, "Run as MCP server (stdio JSON-RPC instead of HTTP)")
 	mcpAgent := flag.String("mcp-agent", "claude", "Agent ID for MCP mode policy evaluation")
+	mcpSessionID := flag.String("mcp-session-id", "", "Session ID for MCP traces (auto-generated if empty)")
 	flag.Parse()
 
 	if *showVersion {
@@ -230,6 +231,7 @@ func main() {
 			Handler:        handler,
 			MCPManager:     mcpManager,
 			AgentID:        *mcpAgent,
+			SessionID:      *mcpSessionID,
 			SupervisorMode: cfg.Supervisor.IsEnabled(),
 		}
 		if err := server.Run(); err != nil {

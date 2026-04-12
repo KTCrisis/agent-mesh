@@ -109,6 +109,7 @@ type Server struct {
 	Handler        *proxy.Handler
 	MCPManager     *Manager
 	AgentID        string // agent ID for policy evaluation in MCP mode
+	SessionID      string // optional session ID (set externally or auto-generated at initialize)
 	SupervisorMode bool   // when true, hide approval.* virtual tools from agents
 }
 
@@ -147,6 +148,11 @@ func (s *Server) Serve(r io.Reader, w io.Writer) error {
 
 		switch req.Method {
 		case "initialize":
+			// Auto-generate session ID for this MCP connection if not set externally
+			if s.SessionID == "" {
+				s.SessionID = trace.NewID()
+			}
+			slog.Info("MCP session started", "session_id", s.SessionID)
 			resp.Result = s.handleInitialize()
 		case "notifications/initialized":
 			// Client ack — no response needed
@@ -340,6 +346,7 @@ func (s *Server) handleToolsCall(params map[string]any) (any, *rpcError) {
 
 	if decision.Action == "deny" {
 		s.Traces.Record(trace.Entry{
+			SessionID:  s.SessionID,
 			AgentID:    s.AgentID,
 			Tool:       toolName,
 			Params:     arguments,
@@ -356,6 +363,7 @@ func (s *Server) handleToolsCall(params map[string]any) (any, *rpcError) {
 
 	if decision.Action == "human_approval" {
 		entry := trace.Entry{
+			SessionID:  s.SessionID,
 			AgentID:    s.AgentID,
 			Tool:       toolName,
 			Params:     arguments,
@@ -461,6 +469,7 @@ func (s *Server) handleToolsCall(params map[string]any) (any, *rpcError) {
 
 	// Trace
 	entry := trace.Entry{
+		SessionID:             s.SessionID,
 		AgentID:               s.AgentID,
 		Tool:                  toolName,
 		Params:                arguments,
