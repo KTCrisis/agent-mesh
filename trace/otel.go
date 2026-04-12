@@ -169,6 +169,9 @@ func (e *OTELExporter) toOTLP(entry Entry) otlpExport {
 		{Key: "http.status_code", Value: intVal(int64(entry.StatusCode))},
 	}
 
+	if entry.SessionID != "" {
+		attrs = append(attrs, otlpKV{Key: "session.id", Value: strVal(entry.SessionID)})
+	}
 	if entry.Error != "" {
 		attrs = append(attrs, otlpKV{Key: "error.message", Value: strVal(entry.Error)})
 	}
