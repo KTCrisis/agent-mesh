@@ -11,9 +11,20 @@ import (
 	"time"
 )
 
+// SessionSummary groups trace entries that share a session ID.
+type SessionSummary struct {
+	SessionID  string    `json:"session_id"`
+	AgentID    string    `json:"agent_id"`    // first agent seen
+	EventCount int       `json:"event_count"`
+	FirstSeen  time.Time `json:"first_seen"`
+	LastSeen   time.Time `json:"last_seen"`
+	Tools      []string  `json:"tools"` // unique tool names
+}
+
 // Entry represents a single traced tool call.
 type Entry struct {
 	TraceID    string         `json:"trace_id"`
+	SessionID  string         `json:"session_id,omitempty"`
 	AgentID    string         `json:"agent_id"`
 	Tool       string         `json:"tool"`
 	Params     map[string]any `json:"params"`
@@ -172,6 +183,96 @@ func (s *Store) Query(agent string, tool string, limit int) []Entry {
 			continue
 		}
 		result = append(result, e)
+	}
+	return result
+}
+
+// QuerySessions returns distinct sessions ordered by most recent activity.
+// Entries without a session ID are excluded.
+func (s *Store) QuerySessions(limit int) []SessionSummary {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if limit <= 0 {
+		limit = 50
+	}
+
+	type sessionAcc struct {
+		summary  SessionSummary
+		toolSet  map[string]bool
+		lastSeen time.Time
+	}
+
+	sessions := make(map[string]*sessionAcc)
+	order := make([]string, 0) // insertion order for stable iteration
+
+	for i := range s.entries {
+		e := &s.entries[i]
+		if e.SessionID == "" {
+			continue
+		}
+		acc, ok := sessions[e.SessionID]
+		if !ok {
+			acc = &sessionAcc{
+				summary: SessionSummary{
+					SessionID: e.SessionID,
+					AgentID:   e.AgentID,
+					FirstSeen: e.Timestamp,
+				},
+				toolSet: make(map[string]bool),
+			}
+			sessions[e.SessionID] = acc
+			order = append(order, e.SessionID)
+		}
+		acc.summary.EventCount++
+		if e.Timestamp.After(acc.summary.LastSeen) {
+			acc.summary.LastSeen = e.Timestamp
+		}
+		if e.Timestamp.Before(acc.summary.FirstSeen) {
+			acc.summary.FirstSeen = e.Timestamp
+		}
+		acc.toolSet[e.Tool] = true
+	}
+
+	// Sort by last_seen descending (most recent first)
+	sorted := make([]string, len(order))
+	copy(sorted, order)
+	for i := 1; i < len(sorted); i++ {
+		for j := i; j > 0 && sessions[sorted[j]].summary.LastSeen.After(sessions[sorted[j-1]].summary.LastSeen); j-- {
+			sorted[j], sorted[j-1] = sorted[j-1], sorted[j]
+		}
+	}
+
+	result := make([]SessionSummary, 0, limit)
+	for _, sid := range sorted {
+		if len(result) >= limit {
+			break
+		}
+		acc := sessions[sid]
+		tools := make([]string, 0, len(acc.toolSet))
+		for t := range acc.toolSet {
+			tools = append(tools, t)
+		}
+		acc.summary.Tools = tools
+		result = append(result, acc.summary)
+	}
+	return result
+}
+
+// QueryBySession returns entries for a specific session, most recent first.
+func (s *Store) QueryBySession(sessionID string, limit int) []Entry {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if limit <= 0 {
+		limit = 200
+	}
+
+	result := make([]Entry, 0)
+	for i := len(s.entries) - 1; i >= 0 && len(result) < limit; i-- {
+		if s.entries[i].SessionID == sessionID {
+			result = append(result, s.entries[i])
+		}
 	}
 	return result
 }

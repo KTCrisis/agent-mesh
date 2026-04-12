@@ -292,6 +292,118 @@ func TestPersistentStoreRotation(t *testing.T) {
 	}
 }
 
+func TestSessionID(t *testing.T) {
+	s := NewStore(100)
+	s.Record(Entry{AgentID: "bot", Tool: "x", Policy: "allow", SessionID: "sess-1"})
+
+	entries := s.Query("", "", 10)
+	if entries[0].SessionID != "sess-1" {
+		t.Errorf("session_id = %q, want sess-1", entries[0].SessionID)
+	}
+}
+
+func TestQuerySessions(t *testing.T) {
+	s := NewStore(100)
+	s.Record(Entry{AgentID: "bot-a", Tool: "read", Policy: "allow", SessionID: "sess-1"})
+	s.Record(Entry{AgentID: "bot-a", Tool: "write", Policy: "allow", SessionID: "sess-1"})
+	s.Record(Entry{AgentID: "bot-b", Tool: "delete", Policy: "deny", SessionID: "sess-2"})
+	// Entry without session — should be excluded
+	s.Record(Entry{AgentID: "bot-c", Tool: "list", Policy: "allow"})
+
+	sessions := s.QuerySessions(50)
+	if len(sessions) != 2 {
+		t.Fatalf("sessions = %d, want 2", len(sessions))
+	}
+
+	// Find sess-1
+	var s1 *SessionSummary
+	for i := range sessions {
+		if sessions[i].SessionID == "sess-1" {
+			s1 = &sessions[i]
+			break
+		}
+	}
+	if s1 == nil {
+		t.Fatal("sess-1 not found")
+	}
+	if s1.EventCount != 2 {
+		t.Errorf("sess-1 event_count = %d, want 2", s1.EventCount)
+	}
+	if s1.AgentID != "bot-a" {
+		t.Errorf("sess-1 agent_id = %q, want bot-a", s1.AgentID)
+	}
+	if len(s1.Tools) != 2 {
+		t.Errorf("sess-1 tools = %d, want 2", len(s1.Tools))
+	}
+}
+
+func TestQueryBySession(t *testing.T) {
+	s := NewStore(100)
+	s.Record(Entry{AgentID: "bot", Tool: "a", Policy: "allow", SessionID: "sess-1"})
+	s.Record(Entry{AgentID: "bot", Tool: "b", Policy: "allow", SessionID: "sess-2"})
+	s.Record(Entry{AgentID: "bot", Tool: "c", Policy: "allow", SessionID: "sess-1"})
+
+	entries := s.QueryBySession("sess-1", 100)
+	if len(entries) != 2 {
+		t.Fatalf("entries = %d, want 2", len(entries))
+	}
+	// Most recent first
+	if entries[0].Tool != "c" {
+		t.Errorf("first entry tool = %q, want c", entries[0].Tool)
+	}
+	if entries[1].Tool != "a" {
+		t.Errorf("second entry tool = %q, want a", entries[1].Tool)
+	}
+}
+
+func TestQuerySessionsEmpty(t *testing.T) {
+	s := NewStore(100)
+	sessions := s.QuerySessions(50)
+	if sessions == nil {
+		t.Fatal("QuerySessions on empty store returned nil, expected empty slice")
+	}
+	if len(sessions) != 0 {
+		t.Fatalf("QuerySessions on empty store returned %d, expected 0", len(sessions))
+	}
+}
+
+func TestQueryBySessionEmpty(t *testing.T) {
+	s := NewStore(100)
+	entries := s.QueryBySession("nonexistent", 100)
+	if entries == nil {
+		t.Fatal("QueryBySession returned nil, expected empty slice")
+	}
+	if len(entries) != 0 {
+		t.Fatalf("QueryBySession returned %d, expected 0", len(entries))
+	}
+}
+
+func TestPersistentStoreSessionID(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "traces.jsonl")
+
+	s, err := NewPersistentStore(100, path)
+	if err != nil {
+		t.Fatalf("NewPersistentStore: %v", err)
+	}
+	s.Record(Entry{AgentID: "bot", Tool: "x", Policy: "allow", SessionID: "sess-42"})
+	s.Close()
+
+	// Reopen — session_id should survive round-trip
+	s2, err := NewPersistentStore(100, path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer s2.Close()
+
+	entries := s2.Query("", "", 10)
+	if len(entries) != 1 {
+		t.Fatalf("entries = %d, want 1", len(entries))
+	}
+	if entries[0].SessionID != "sess-42" {
+		t.Errorf("session_id = %q, want sess-42", entries[0].SessionID)
+	}
+}
+
 func TestCloseIdempotent(t *testing.T) {
 	s := NewStore(100)
 	// Close on in-memory store should not panic

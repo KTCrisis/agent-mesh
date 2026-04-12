@@ -101,6 +101,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleCreateGrant(w, r)
 	case r.Method == "DELETE" && strings.HasPrefix(r.URL.Path, "/grants/"):
 		h.handleRevokeGrant(w, r)
+	case r.Method == "GET" && r.URL.Path == "/sessions":
+		h.handleListSessions(w, r)
+	case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/sessions/"):
+		h.handleSessionEvents(w, r)
 	case r.Method == "GET" && r.URL.Path == "/health":
 		h.handleHealth(w, r)
 	case r.Method == "GET" && r.URL.Path == "/version":
@@ -117,6 +121,7 @@ func (h *Handler) handleToolCall(w http.ResponseWriter, r *http.Request) {
 	if traceID == "" {
 		traceID = trace.NewID()
 	}
+	sessionID := extractSessionID(r)
 	start := time.Now()
 
 	// 1. Parse request body
@@ -144,6 +149,7 @@ func (h *Handler) handleToolCall(w http.ResponseWriter, r *http.Request) {
 		if err := h.RateLimiter.Check(agentID, preDecision.Rule, toolName, paramsKey); err != nil {
 			entry := trace.Entry{
 				TraceID:    traceID,
+				SessionID:  sessionID,
 				AgentID:    agentID,
 				Tool:       toolName,
 				Params:     req.Params,
@@ -172,6 +178,7 @@ func (h *Handler) handleToolCall(w http.ResponseWriter, r *http.Request) {
 	if decision.Action == "deny" {
 		entry := trace.Entry{
 			TraceID:    traceID,
+			SessionID:  sessionID,
 			AgentID:    agentID,
 			Tool:       toolName,
 			Params:     req.Params,
@@ -205,6 +212,7 @@ func (h *Handler) handleToolCall(w http.ResponseWriter, r *http.Request) {
 			// Fallback: no approval store configured
 			entry := trace.Entry{
 				TraceID:    traceID,
+				SessionID:  sessionID,
 				AgentID:    agentID,
 				Tool:       toolName,
 				Params:     req.Params,
@@ -226,6 +234,7 @@ func (h *Handler) handleToolCall(w http.ResponseWriter, r *http.Request) {
 
 		entry := trace.Entry{
 			TraceID:    traceID,
+			SessionID:  sessionID,
 			AgentID:    agentID,
 			Tool:       toolName,
 			Params:     req.Params,
@@ -316,6 +325,7 @@ func (h *Handler) handleToolCall(w http.ResponseWriter, r *http.Request) {
 	// 5. Trace
 	entry := trace.Entry{
 		TraceID:               traceID,
+		SessionID:             sessionID,
 		AgentID:               agentID,
 		Tool:                  toolName,
 		Params:                req.Params,
@@ -541,6 +551,31 @@ func (h *Handler) handleVersion(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
+func (h *Handler) handleListSessions(w http.ResponseWriter, r *http.Request) {
+	limit := 50
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if n, err := strconv.Atoi(l); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	writeJSON(w, 200, h.Traces.QuerySessions(limit))
+}
+
+func (h *Handler) handleSessionEvents(w http.ResponseWriter, r *http.Request) {
+	sessionID := strings.TrimPrefix(r.URL.Path, "/sessions/")
+	if sessionID == "" {
+		writeJSON(w, 400, map[string]string{"error": "missing session ID"})
+		return
+	}
+	limit := 200
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if n, err := strconv.Atoi(l); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	writeJSON(w, 200, h.Traces.QueryBySession(sessionID, limit))
+}
+
 // extractTraceID reads a trace ID from incoming headers.
 // Supports W3C Traceparent (extracts trace-id field) and X-Trace-Id.
 // Returns empty string if none provided (trace store will generate one).
@@ -566,6 +601,12 @@ func isHexString(s string) bool {
 		}
 	}
 	return true
+}
+
+// extractSessionID reads an optional session ID from the X-Session-Id header.
+// Returns empty string if not provided (no auto-generation).
+func extractSessionID(r *http.Request) string {
+	return r.Header.Get("X-Session-Id")
 }
 
 // extractAgentID reads the agent ID from the Authorization header.

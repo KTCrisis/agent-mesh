@@ -994,3 +994,88 @@ func TestHandleApprovalContentRedaction(t *testing.T) {
 		t.Error("redacted content should have content_sha256")
 	}
 }
+
+func TestSessionIDPropagation(t *testing.T) {
+	handler, _ := setupHandler(t)
+
+	req := httptest.NewRequest("POST", "/tool/get_pet", strings.NewReader(`{"params":{}}`))
+	req.Header.Set("Authorization", "Bearer agent:test-bot")
+	req.Header.Set("X-Session-Id", "sess-abc")
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != 200 {
+		t.Fatalf("status = %d, want 200, body: %s", w.Code, w.Body.String())
+	}
+
+	entries := handler.Traces.Query("", "", 10)
+	if len(entries) == 0 {
+		t.Fatal("expected at least one trace entry")
+	}
+	if entries[0].SessionID != "sess-abc" {
+		t.Errorf("session_id = %q, want sess-abc", entries[0].SessionID)
+	}
+}
+
+func TestSessionIDAbsentIsEmpty(t *testing.T) {
+	handler, _ := setupHandler(t)
+
+	req := httptest.NewRequest("POST", "/tool/get_pet", strings.NewReader(`{"params":{}}`))
+	req.Header.Set("Authorization", "Bearer agent:test-bot")
+	// No X-Session-Id header
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != 200 {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+
+	entries := handler.Traces.Query("", "", 10)
+	if entries[0].SessionID != "" {
+		t.Errorf("session_id = %q, want empty string when header absent", entries[0].SessionID)
+	}
+}
+
+func TestSessionEndpoints(t *testing.T) {
+	handler, _ := setupHandler(t)
+
+	// Create entries with sessions
+	for _, sess := range []string{"sess-1", "sess-1", "sess-2"} {
+		req := httptest.NewRequest("POST", "/tool/get_pet", strings.NewReader(`{"params":{}}`))
+		req.Header.Set("Authorization", "Bearer agent:bot")
+		req.Header.Set("X-Session-Id", sess)
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		if w.Code != 200 {
+			t.Fatalf("setup: status = %d", w.Code)
+		}
+	}
+
+	// GET /sessions
+	req := httptest.NewRequest("GET", "/sessions", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("GET /sessions: status = %d", w.Code)
+	}
+	var sessions []trace.SessionSummary
+	json.NewDecoder(w.Body).Decode(&sessions)
+	if len(sessions) != 2 {
+		t.Fatalf("sessions = %d, want 2", len(sessions))
+	}
+
+	// GET /sessions/sess-1
+	req = httptest.NewRequest("GET", "/sessions/sess-1", nil)
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("GET /sessions/sess-1: status = %d", w.Code)
+	}
+	var events []trace.Entry
+	json.NewDecoder(w.Body).Decode(&events)
+	if len(events) != 2 {
+		t.Fatalf("events for sess-1 = %d, want 2", len(events))
+	}
+}
