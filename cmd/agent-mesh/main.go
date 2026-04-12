@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -173,37 +174,43 @@ func main() {
 		handler.CLIRunner = &meshexec.Runner{MaxOutputBytes: 1 << 20}
 	}
 
-	// 7. Connect upstream MCP servers
+	// 7. Connect upstream MCP servers (parallel)
 	var mcpManager *mcp.Manager
 	if len(cfg.MCPServers) > 0 {
 		mcpManager = mcp.NewManager()
 		handler.MCPForwarder = mcpManager
 
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		var wg sync.WaitGroup
 		for _, serverCfg := range cfg.MCPServers {
-			var client *mcp.MCPClient
-			switch serverCfg.Transport {
-			case "stdio":
-				client = mcp.NewStdioClient(serverCfg.Name, serverCfg.Command, serverCfg.Args, serverCfg.Env)
-			case "sse":
-				client = mcp.NewSSEClient(serverCfg.Name, serverCfg.URL, serverCfg.Headers)
-			default:
-				slog.Error("unsupported MCP transport", "name", serverCfg.Name, "transport", serverCfg.Transport)
-				continue
-			}
+			wg.Add(1)
+			go func(sc config.MCPServerConfig) {
+				defer wg.Done()
+				var client *mcp.MCPClient
+				switch sc.Transport {
+				case "stdio":
+					client = mcp.NewStdioClient(sc.Name, sc.Command, sc.Args, sc.Env)
+				case "sse":
+					client = mcp.NewSSEClient(sc.Name, sc.URL, sc.Headers)
+				default:
+					slog.Error("unsupported MCP transport", "name", sc.Name, "transport", sc.Transport)
+					return
+				}
 
-			if err := client.Connect(ctx); err != nil {
-				slog.Error("failed to connect MCP server", "name", serverCfg.Name, "error", err)
-				continue
-			}
-			mcpManager.Add(client)
+				if err := client.Connect(ctx); err != nil {
+					slog.Error("failed to connect MCP server", "name", sc.Name, "error", err)
+					return
+				}
+				mcpManager.Add(client)
 
-			defs := convertMCPTools(client.Tools())
-			reg.LoadMCP(serverCfg.Name, defs)
-			for _, d := range defs {
-				slog.Info("  MCP tool registered", "name", serverCfg.Name+"."+d.Name, "server", serverCfg.Name)
-			}
+				defs := convertMCPTools(client.Tools())
+				reg.LoadMCP(sc.Name, defs)
+				for _, d := range defs {
+					slog.Info("  MCP tool registered", "name", sc.Name+"."+d.Name, "server", sc.Name)
+				}
+			}(serverCfg)
 		}
+		wg.Wait()
 		cancel()
 
 		slog.Info("MCP upstream servers connected", "count", len(mcpManager.All()))
