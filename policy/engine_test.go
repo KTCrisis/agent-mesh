@@ -134,6 +134,70 @@ func TestEvaluateMCPNamespacedTools(t *testing.T) {
 	}
 }
 
+func TestSpecificPolicyBeforeWildcard(t *testing.T) {
+	// Policies deliberately in wrong alphabetical order: default (*) before scout7.
+	// The engine must sort by specificity so scout7 matches first.
+	e := NewEngine([]config.Policy{
+		{
+			Name:  "default",
+			Agent: "*",
+			Rules: []config.Rule{
+				{Tools: []string{"*"}, Action: "deny"},
+			},
+		},
+		{
+			Name:  "scout7",
+			Agent: "scout7",
+			Rules: []config.Rule{
+				{Tools: []string{"searxng.*"}, Action: "allow"},
+				{Tools: []string{"*"}, Action: "deny"},
+			},
+		},
+	})
+
+	d := e.Evaluate("scout7", "searxng.web_search", nil)
+	if d.Action != "allow" {
+		t.Errorf("action = %q, want allow (specific policy should match before wildcard)", d.Action)
+	}
+	if d.Rule != "scout7" {
+		t.Errorf("rule = %q, want scout7", d.Rule)
+	}
+
+	// Unknown agent still hits default deny
+	d = e.Evaluate("unknown", "searxng.web_search", nil)
+	if d.Action != "deny" {
+		t.Errorf("action = %q, want deny (unknown agent → default)", d.Action)
+	}
+}
+
+func TestPartialWildcardBeforeCatchAll(t *testing.T) {
+	// Partial wildcard (support-*) should match before catch-all (*).
+	e := NewEngine([]config.Policy{
+		{
+			Name:  "default",
+			Agent: "*",
+			Rules: []config.Rule{
+				{Tools: []string{"*"}, Action: "deny"},
+			},
+		},
+		{
+			Name:  "support",
+			Agent: "support-*",
+			Rules: []config.Rule{
+				{Tools: []string{"get_order"}, Action: "allow"},
+			},
+		},
+	})
+
+	d := e.Evaluate("support-bot", "get_order", nil)
+	if d.Action != "allow" {
+		t.Errorf("action = %q, want allow (partial wildcard before catch-all)", d.Action)
+	}
+	if d.Rule != "support" {
+		t.Errorf("rule = %q, want support", d.Rule)
+	}
+}
+
 func TestEvaluateToolGlobPattern(t *testing.T) {
 	e := NewEngine([]config.Policy{
 		{Name: "claude", Agent: "claude", Rules: []config.Rule{

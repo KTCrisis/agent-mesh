@@ -2,6 +2,7 @@ package policy
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -22,7 +23,23 @@ type Engine struct {
 }
 
 func NewEngine(policies []config.Policy) *Engine {
-	return &Engine{policies: policies}
+	sorted := make([]config.Policy, len(policies))
+	copy(sorted, policies)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		return agentSpecificity(sorted[i].Agent) > agentSpecificity(sorted[j].Agent)
+	})
+	return &Engine{policies: sorted}
+}
+
+// agentSpecificity scores an agent pattern: exact match > partial wildcard > catch-all.
+func agentSpecificity(pattern string) int {
+	if pattern == "*" {
+		return 0
+	}
+	if strings.ContainsAny(pattern, "*?") {
+		return 1
+	}
+	return 2
 }
 
 // Evaluate checks if an agent can call a tool with given params.
