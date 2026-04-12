@@ -721,12 +721,14 @@ agent-mesh/
 ├── trace/
 │   ├── store.go           # In-memory trace store + JSONL persistence
 │   └── otel.go            # OpenTelemetry OTLP exporter (file, stdout, HTTP)
+├── policies/              # Per-agent policy files (used with policy_dir)
+│   └── default.yaml       # Catch-all deny (add your own *.yaml per agent)
 ├── examples/              # Example config files
 │   ├── filesystem.yaml    # Filesystem governance (read/write/deny)
 │   ├── petstore.yaml      # OpenAPI import demo (Petstore)
 │   ├── travel-agent.yaml  # Multi-tool travel agent
 │   ├── cli-tools/         # CLI tool governance (terraform, kubectl, gh)
-│   └── policies/          # Per-agent policy files (used with policy_dir)
+│   └── langchain-agent/   # LangChain cross-agent governance demo
 └── docs/
     ├── agent-landscape.md # AI agent CLI landscape survey
     ├── otel.md            # OpenTelemetry export guide

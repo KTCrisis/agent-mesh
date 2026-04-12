@@ -34,4 +34,5 @@ __pycache__/
 docs/internal/
 traces.jsonl
 traces-*.jsonl
-examples/*.local.yaml
+*.local.yaml
+policies/*.local.yaml
