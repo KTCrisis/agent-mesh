@@ -32,6 +32,8 @@ __pycache__/
 
 # Project
 docs/internal/
+docs/positioning.md
+docs/agent-landscape.md
 traces.jsonl
 traces-*.jsonl
 *.local.yaml
