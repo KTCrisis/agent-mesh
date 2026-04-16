@@ -21,6 +21,15 @@ type Config struct {
 	PolicyDir    string            `yaml:"policy_dir,omitempty"` // directory of per-agent policy files
 	MCPServers   []MCPServerConfig `yaml:"mcp_servers"`
 	CLITools     []CLIToolConfig   `yaml:"cli_tools"`
+	OpenAPIs     []OpenAPIConfig   `yaml:"openapi,omitempty"`
+}
+
+// OpenAPIConfig declares an OpenAPI spec to import as governed tools.
+// Set either url (fetched via HTTP) or file (read from disk), not both.
+type OpenAPIConfig struct {
+	URL        string `yaml:"url,omitempty"`
+	File       string `yaml:"file,omitempty"`
+	BackendURL string `yaml:"backend_url,omitempty"`
 }
 
 // SupervisorConfig controls supervisor mode and content isolation.
@@ -132,7 +141,22 @@ func Load(path string) (*Config, error) {
 	if err := cfg.validateCLITools(); err != nil {
 		return nil, err
 	}
+	if err := cfg.validateOpenAPIs(); err != nil {
+		return nil, err
+	}
 	return &cfg, nil
+}
+
+func (c *Config) validateOpenAPIs() error {
+	for i, oa := range c.OpenAPIs {
+		if oa.URL == "" && oa.File == "" {
+			return fmt.Errorf("openapi[%d]: url or file is required", i)
+		}
+		if oa.URL != "" && oa.File != "" {
+			return fmt.Errorf("openapi[%d]: set url or file, not both", i)
+		}
+	}
+	return nil
 }
 
 // loadPolicyDir loads per-agent policy files from the configured directory.

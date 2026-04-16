@@ -89,6 +89,24 @@ func main() {
 		slog.Info("no OpenAPI spec provided — use --openapi to load REST tools")
 	}
 
+	// 2b. Load OpenAPI specs from config
+	for _, oa := range cfg.OpenAPIs {
+		if oa.URL != "" {
+			slog.Info("loading OpenAPI spec from config", "url", oa.URL)
+			if err := reg.LoadOpenAPI(oa.URL, oa.BackendURL, nil); err != nil {
+				slog.Error("failed to load OpenAPI spec", "url", oa.URL, "error", err)
+				os.Exit(1)
+			}
+		} else {
+			slog.Info("loading OpenAPI spec from file", "file", oa.File)
+			if err := reg.LoadOpenAPIFile(oa.File, oa.BackendURL); err != nil {
+				slog.Error("failed to load OpenAPI spec", "file", oa.File, "error", err)
+				os.Exit(1)
+			}
+		}
+		slog.Info("OpenAPI tools loaded", "tools", len(reg.All()))
+	}
+
 	// 3. Build policy engine
 	pol := policy.NewEngine(cfg.Policies)
 	slog.Info("policy engine ready", "policies", len(cfg.Policies))

@@ -5,10 +5,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 )
 
-// LoadOpenAPI fetches an OpenAPI 2.0/3.0 spec and extracts tools.
+// LoadOpenAPI fetches an OpenAPI 2.0/3.0 spec from a URL and extracts tools.
 func (r *Registry) LoadOpenAPI(specURL string, backendURL string, headers map[string]string) error {
 	resp, err := http.Get(specURL)
 	if err != nil {
@@ -21,18 +22,29 @@ func (r *Registry) LoadOpenAPI(specURL string, backendURL string, headers map[st
 		return fmt.Errorf("read spec: %w", err)
 	}
 
+	return r.loadOpenAPISpec(body, backendURL, headers)
+}
+
+// LoadOpenAPIFile reads an OpenAPI spec from a local file and extracts tools.
+func (r *Registry) LoadOpenAPIFile(path string, backendURL string) error {
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read spec file: %w", err)
+	}
+	return r.loadOpenAPISpec(body, backendURL, nil)
+}
+
+func (r *Registry) loadOpenAPISpec(body []byte, backendURL string, headers map[string]string) error {
 	var spec map[string]any
 	if err := json.Unmarshal(body, &spec); err != nil {
 		return fmt.Errorf("parse spec: %w", err)
 	}
 
-	// Determine base URL
 	base := backendURL
 	if base == "" {
 		base = inferBaseURL(spec)
 	}
 
-	// Extract paths → tools
 	paths, ok := spec["paths"].(map[string]any)
 	if !ok {
 		return fmt.Errorf("no paths found in spec")
