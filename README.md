@@ -12,6 +12,19 @@ One binary. One YAML config. Fail closed by default.
 
 Works with Claude Code, Cursor, LangChain, CrewAI, or any agent that uses HTTP, MCP, or CLI tools.
 
+## Table of contents
+
+- [Architecture](#architecture)
+- [Install](#install)
+- [Quick start](#quick-start)
+- [Config reference](#config-reference) — MCP servers, OpenAPI, CLI tools, policies, supervisor
+- [Features](#features) — approval, grants, rate limiting, tracing, OTEL, supervisor
+- [Commands & flags](#commands--flags)
+- [API](#api)
+- [Project structure](#project-structure)
+- [Tests](#tests)
+- [Roadmap](#roadmap)
+
 ## Architecture
 
 ```mermaid
