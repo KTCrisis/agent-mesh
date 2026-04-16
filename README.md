@@ -489,9 +489,12 @@ go test ./... -race        # with race detector
 - [x] CLI tool governance (3 modes, secure exec)
 - [x] OpenAPI config field (persistent import)
 - [x] Dashboard UI (via [agent7](https://github.com/KTCrisis/agent7))
+- [ ] Durable state (approvals, grants, rate limits persisted across restarts)
 - [ ] `agent-mesh serve` daemon mode (persistent, multi-client)
+- [ ] Operator auth (separate identity from agent Bearer)
+- [ ] Session log durable + `wake(sessionId)` recovery
 - [ ] Policy hot-reload
-- [ ] JWT agent credentials
+- [ ] Condition engine v2 (AND/OR/nested)
 
 ## Why "Agent Mesh"
 

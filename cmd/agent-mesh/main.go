@@ -31,11 +31,6 @@ var (
 )
 
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "version" {
-		fmt.Printf("agent-mesh %s (%s) built %s\n", version, commit, date)
-		return
-	}
-
 	// Subcommand: discover
 	if len(os.Args) > 1 && os.Args[1] == "discover" {
 		runDiscover(os.Args[2:])
