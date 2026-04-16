@@ -1,5 +1,10 @@
 # Agent Mesh
 
+[![GitHub release](https://img.shields.io/github/v/release/KTCrisis/agent-mesh?style=flat-square&color=00bcd4)](https://github.com/KTCrisis/agent-mesh/releases)
+[![Go](https://img.shields.io/badge/Go-1.24+-00ADD8?style=flat-square&logo=go&logoColor=white)](https://go.dev)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue?style=flat-square)](LICENSE)
+[![Tests](https://img.shields.io/badge/tests-207_passed-brightgreen?style=flat-square)]()
+
 **Guardrail for AI agents.**
 Open-source sidecar proxy between AI agents and their tools — policy, human approval, and tracing without changing agent code.
 
