@@ -1,7 +1,7 @@
 # Agent Mesh
 
 **Guardrail for AI agents.**
-An open-source sidecar proxy that sits between AI agents and their tools — adding policy, human approval, and tracing without changing agent code.
+Open-source sidecar proxy between AI agents and their tools — policy, human approval, and tracing without changing agent code.
 
 One binary. One YAML config. Fail closed by default.
 
@@ -25,7 +25,7 @@ flowchart LR
         FWD["Forward"]
         APP["Approval store"]
         GRT["Grant store<br/>(sudo for agents)"]
-        TRC["Trace store<br/>(JSONL + in-memory)"]
+        TRC["Trace store<br/>(JSONL + sessions)"]
         OTEL["OTEL exporter<br/>(file / stdout / OTLP)"]
 
         REG --> RL --> POL --> FWD
@@ -38,7 +38,7 @@ flowchart LR
     subgraph Upstream["Upstream tools"]
         U1["MCP servers<br/>(stdio + SSE)"]
         U2["REST APIs<br/>(OpenAPI specs)"]
-        U3["CLI binaries<br/>(terraform, kubectl, gh)"]
+        U3["CLI binaries<br/>(terraform, gh, docker)"]
     end
 
     subgraph Observability["Observability"]
@@ -58,35 +58,12 @@ flowchart LR
     OTEL --> O2
 ```
 
-**Import:** OpenAPI specs · MCP servers (stdio + SSE) · CLI binaries
+**Import:** OpenAPI specs (URL or file) · MCP servers (stdio + SSE) · CLI binaries
 **Export:** MCP server (stdio) · HTTP proxy (`:port`) · OTLP traces
-
-### Request flow
-
-Every tool call follows the same path, regardless of transport:
-
-```
-Agent calls tool
-  → Extract agent identity
-  → Rate limit check (calls/min, total budget, loop detection)
-  → Look up tool in registry
-  → Evaluate policy (allow / deny / human_approval)
-  → Forward to upstream backend (HTTP, MCP, or CLI)
-  → Record trace (agent, tool, params, decision, latency)
-  → Return response
-```
 
 ## The problem
 
-When you connect tools directly to an AI agent, the agent gets unguarded access:
-
-```bash
-claude mcp add filesystem -- npx @modelcontextprotocol/server-filesystem /
-claude mcp add github -- npx @modelcontextprotocol/server-github
-claude mcp add database -- npx mcp-server-sqlite --db prod.db
-```
-
-No policy. No trace. No control. If something goes wrong, you may not even know what happened.
+When you connect tools directly to an AI agent, the agent gets unguarded access — no policy, no trace, no control.
 
 ## The solution
 
@@ -96,82 +73,42 @@ Put Agent Mesh between the agent and its tools:
 claude mcp add agent-mesh -- ./agent-mesh --mcp --config config.yaml
 ```
 
-```
-Claude ──> agent-mesh ──> filesystem (read: allow, write: approval, delete: deny)
-                     ├──> gmail      (read: allow, send: approval, delete: deny)
-                     ├──> weather    (allow)
-                     └──> flights    (allow)
-                        │
-                  policy · approval · trace
-```
-
 The agent sees a normal tool surface. Agent Mesh enforces policy and records traces on every call.
 
 ## Install
 
-### Download binary (recommended)
-
-Grab the latest release for your platform:
+### Binary (recommended)
 
 ```bash
-# Get latest version tag
 VERSION=$(curl -s https://api.github.com/repos/KTCrisis/agent-mesh/releases/latest | grep tag_name | cut -d '"' -f4)
 
-# Linux (amd64)
+# Linux amd64
 curl -L "https://github.com/KTCrisis/agent-mesh/releases/download/${VERSION}/agent-mesh_${VERSION#v}_linux_amd64.tar.gz" | tar xz
 sudo mv agent-mesh /usr/local/bin/
 
-# Linux (arm64)
-curl -L "https://github.com/KTCrisis/agent-mesh/releases/download/${VERSION}/agent-mesh_${VERSION#v}_linux_arm64.tar.gz" | tar xz
-sudo mv agent-mesh /usr/local/bin/
-
-# macOS (Apple Silicon)
+# macOS Apple Silicon
 curl -L "https://github.com/KTCrisis/agent-mesh/releases/download/${VERSION}/agent-mesh_${VERSION#v}_darwin_arm64.tar.gz" | tar xz
-sudo mv agent-mesh /usr/local/bin/
-
-# macOS (Intel)
-curl -L "https://github.com/KTCrisis/agent-mesh/releases/download/${VERSION}/agent-mesh_${VERSION#v}_darwin_amd64.tar.gz" | tar xz
 sudo mv agent-mesh /usr/local/bin/
 ```
 
 All releases: [github.com/KTCrisis/agent-mesh/releases](https://github.com/KTCrisis/agent-mesh/releases)
 
-### Build from source
+### From source
 
 Requires Go 1.24+:
 
 ```bash
 git clone https://github.com/KTCrisis/agent-mesh.git
 cd agent-mesh
+make install    # builds to ~/go/bin/agent-mesh with version metadata
 
-# Quick build (binary in current directory, no version info)
-go build -o agent-mesh ./cmd/agent-mesh
-
-# Or via Makefile — embeds version, commit and build date via ldflags
-make build                 # ./agent-mesh
-make install               # $HOME/go/bin/agent-mesh (make sure it's on your PATH)
-
-./agent-mesh version
-# agent-mesh v0.7.0 (abcdef1) built 2026-04-11T09:33:00Z
+agent-mesh --version
+# agent-mesh v0.8.5 (bee2a9e) built 2026-04-16T07:11:16Z
 ```
-
-`make install` writes the binary to `$HOME/go/bin/agent-mesh` with version metadata baked in, so `agent-mesh version` reports the exact build.
 
 ## Quick start
 
-### 1. Generate a config
-
-```bash
-# From an OpenAPI spec — turns any REST API into governed MCP tools
-./agent-mesh discover --openapi https://petstore.swagger.io/v2/swagger.json --generate-policy > config.yaml
-
-# Or from MCP servers already defined in a config
-./agent-mesh discover --config config.yaml --generate-policy
-```
-
-This discovers all available tools and generates a safe starter policy (reads allowed, writes denied).
-
-Or write one manually:
+### 1. Write a config
 
 ```yaml
 # config.yaml
@@ -199,6 +136,13 @@ policies:
         action: deny
 ```
 
+Or auto-generate one:
+
+```bash
+agent-mesh discover --config config.yaml --generate-policy
+agent-mesh discover --openapi https://petstore.swagger.io/v2/swagger.json --generate-policy
+```
+
 ### 2. Plug into Claude Code
 
 ```bash
@@ -209,352 +153,13 @@ claude mcp add agent-mesh -- agent-mesh --mcp --config config.yaml
 
 Restart Claude Code. The agent sees the tools. Agent Mesh enforces the rules. Every call is traced.
 
-## Features
+---
 
-### Policy engine
+## Config reference
 
-YAML-based, first-match-wins. Supports glob patterns for both agents and tools.
+All features are declared in a single YAML config.
 
-```yaml
-policies:
-  - name: support-agent
-    agent: "support-*"
-    rules:
-      - tools: ["*.read_*", "*.list_*", "*.get_*"]
-        action: allow
-      - tools: ["create_refund"]
-        action: allow
-        condition:
-          field: "params.amount"
-          operator: "<"
-          value: 500
-      - tools: ["*"]
-        action: deny
-```
-
-**Actions:**
-
-| Action | Behavior |
-|--------|----------|
-| `allow` | Forward to backend, return result |
-| `deny` | Block the call, return denial |
-| `human_approval` | Require human approval before forwarding |
-
-**Patterns:** `*` matches everything, `filesystem.*` matches all filesystem tools, `gmail.gmail_read_*` matches read operations. Uses Go's `filepath.Match` glob syntax.
-
-**Fail closed:** no matching rule = deny.
-
-### Per-agent policy files
-
-Split policies into individual files — one per agent, one per concern:
-
-```yaml
-# config.yaml — infrastructure only
-mcp_servers:
-  - name: filesystem
-    transport: stdio
-    command: npx
-    args: ["-y", "@modelcontextprotocol/server-filesystem", "/home/me"]
-
-policy_dir: ./policies   # load all *.yaml from this directory
-```
-
-```yaml
-# policies/scout7.yaml — one agent, one file
-name: scout7
-agent: "scout7"
-rate_limit:
-  max_per_minute: 30
-rules:
-  - tools: ["searxng.*", "fetch.*", "ollama.*", "memory.*"]
-    action: allow
-  - tools: ["arch7.create_diagram"]
-    action: allow
-  - tools: ["*"]
-    action: deny
-```
-
-```yaml
-# policies/default.yaml — catch-all
-name: default
-agent: "*"
-rules:
-  - tools: ["*"]
-    action: deny
-```
-
-Files are loaded alphabetically and appended after any inline `policies:` in the main config. Both sources compose — inline first, then directory. Duplicate policy names produce an error.
-
-Add an agent: drop a file. Revoke: delete it. Each agent's access is self-contained.
-
-### Rate limiting
-
-Per-agent call limits to prevent runaway agents and infinite loops:
-
-```yaml
-policies:
-  - name: support-agent
-    agent: "support-*"
-    rate_limit:
-      max_per_minute: 30    # sliding window
-      max_total: 1000       # lifetime budget (process lifetime)
-    rules:
-      - tools: ["get_order", "get_customer"]
-        action: allow
-```
-
-Three protections:
-
-| Protection | What it stops | Response |
-|------------|--------------|----------|
-| `max_per_minute` | Agent calling too fast (runaway loop) | HTTP 429 |
-| `max_total` | Agent exhausting its budget over time | HTTP 429 |
-| Loop detection | Same tool + same params > 3x in 10s | HTTP 429 `loop_detected` |
-
-Loop detection is always active. Rate limits are optional per policy. Both show up in traces as `"rate_limited"`.
-
-### Human approval
-
-When a policy requires `human_approval`, the flow is **non-blocking**:
-
-```
-Claude calls filesystem.write_file
-  → agent-mesh returns: "Approval required (id: a1b2c3d4)"
-  → Claude shows the message, asks user for confirmation
-  → Claude calls approval.resolve(id: a1b2c3d4, decision: approve)
-  → agent-mesh replays the original tool call
-  → Result returned to Claude
-```
-
-No freeze, no second terminal needed. The agent stays responsive.
-
-Virtual MCP tools handle governance:
-
-| Tool | Description |
-|------|-------------|
-| `approval.resolve` | Approve or deny a pending request. On approve, replays the original tool call. |
-| `approval.pending` | List all pending approval requests. |
-
-Approvals can also be resolved via:
-- **CLI:** `mesh approve <id>` from another terminal
-- **HTTP API:** `POST /approvals/{id}/approve`
-
-Configurable timeout (default 5 min). Timeout = deny.
-
-### Temporal grants
-
-When you're approving the same tool repeatedly, create a temporary override — like `sudo` for agents:
-
-```
-You: "Grant filesystem.write_* for 30 minutes"
-Claude: grant.create {tools: "filesystem.write_*", duration: "30m"}
-  → Grant a1b2c3d4 created, expires in 30m
-  → All filesystem.write_* calls now bypass approval
-  → Traced as "grant:a1b2c3d4" (full audit trail)
-```
-
-Three virtual MCP tools:
-
-| Tool | Description |
-|------|-------------|
-| `grant.create` | Create a temporal grant (tools pattern + duration) |
-| `grant.list` | List all active grants |
-| `grant.revoke` | Revoke a grant by ID |
-
-Also available via HTTP API:
-
-```bash
-# Create a grant
-curl -X POST http://localhost:9090/grants \
-  -d '{"agent":"claude","tools":"filesystem.write_*","duration":"30m"}'
-
-# List active grants
-curl http://localhost:9090/grants
-
-# Revoke
-curl -X DELETE http://localhost:9090/grants/a1b2c3d4
-```
-
-Grants expire automatically. No config change needed. Every call that uses a grant is traced with the grant ID.
-
-**Scope — grants only bypass `human_approval`.** Tools marked `deny` in policy remain blocked even with a matching grant. This is intentional: `deny` is a hard boundary that requires a policy edit, not a runtime sudo.
-
-| Policy action | Grant bypasses? |
-|---|---|
-| `allow` | N/A (already permitted) |
-| `human_approval` | ✅ yes — approval skipped |
-| `deny` | ❌ no — policy edit required |
-
-Think of it as `sudo` with a time window: it skips the password prompt for allowed commands, but it doesn't grant root on commands your `sudoers` explicitly forbids.
-
-### CLI tool governance
-
-Wrap any CLI binary (terraform, kubectl, docker, gh, aws…) behind policy, approval, and tracing. Three modes:
-
-```yaml
-cli_tools:
-  # Simple — all subcommands, default_action applies
-  - name: gh
-    bin: gh
-    default_action: allow
-
-  # Fine-tuned — specific commands with overrides
-  - name: terraform
-    bin: terraform
-    default_action: human_approval
-    commands:
-      plan:
-        timeout: 120s
-      apply:
-        allowed_args: ["-target"]
-
-  # Strict — only declared commands, everything else denied
-  - name: kubectl
-    bin: kubectl
-    strict: true
-    commands:
-      get:
-        allowed_args: ["-n", "--namespace", "-o", "--output"]
-```
-
-Security: no shell execution (`exec.Command()` directly), argument allowlists, metacharacter rejection, timeout enforcement, env isolation, output cap (1MB).
-
-Agents call CLI tools like any other MCP tool — `terraform.plan`, `kubectl.get`, `gh.pr.list`. Same policy rules, same approval flow, same traces.
-
-See [docs/cli-tools.md](docs/cli-tools.md) for full documentation.
-
-### Supervisor protocol
-
-Agent Mesh exposes a rich approval API so that external **supervisor agents** can review and resolve approvals on behalf of humans — handling the 80% of routine decisions and escalating the rest.
-
-The supervisor is not built into agent-mesh. It's any external process that polls `GET /approvals` and calls `POST /approvals/{id}/approve` or `/deny`. Agent-mesh provides the protocol; you bring the logic.
-
-**Tool filtering** — domain-specific supervisors watch only their scope:
-
-```bash
-# Filesystem supervisor
-curl http://localhost:9090/approvals?status=pending&tool=filesystem.*
-
-# Gmail supervisor
-curl http://localhost:9090/approvals?status=pending&tool=gmail.*
-```
-
-**Context enrichment** — `GET /approvals/{id}` includes the agent's recent trace history and active grants, giving the supervisor evaluation context:
-
-```bash
-curl http://localhost:9090/approvals/a1b2c3d4 | jq '.recent_traces, .active_grants'
-```
-
-**Structured verdicts** — approve or deny with reasoning and confidence:
-
-```bash
-curl -X POST http://localhost:9090/approvals/a1b2c3d4/approve \
-  -d '{"resolved_by":"agent:supervisor","reasoning":"path within sandbox","confidence":0.95}'
-```
-
-Reasoning and confidence are stored in traces for audit and calibration.
-
-**Content isolation** — when `supervisor.expose_content: false`, raw param content is replaced with structural metadata (length, SHA256, type). The supervisor sees structure, not content — shrinking the prompt injection attack surface:
-
-```yaml
-supervisor:
-  expose_content: false
-```
-
-**Injection detection** — every approval view includes an `injection_risk` flag when suspicious patterns are found in tool params (e.g., "ignore previous instructions", "override policy").
-
-See [docs/supervisor-protocol.md](docs/supervisor-protocol.md) for the full protocol reference, evaluation guidelines, and how to build your own supervisor.
-
-### Tracing
-
-Every tool call is logged with agent, tool, params, policy decision, latency, and approval metadata.
-
-```bash
-# Query via HTTP API
-curl http://localhost:9090/traces?agent=claude&tool=filesystem.write_file | jq
-
-# Read from JSONL file
-cat traces.jsonl | jq 'select(.policy == "deny")'
-
-# Approval analytics
-cat traces.jsonl | jq 'select(.approval_status == "approved")'
-```
-
-### OpenTelemetry export
-
-Export every trace as OTLP spans — to a file, stdout, or any OTLP-compatible backend (Jaeger, Grafana Tempo, Datadog).
-
-```yaml
-# JSONL file (zero infra, scriptable)
-otel_endpoint: /path/to/traces-otel.jsonl
-
-# OTLP HTTP (Jaeger, Tempo, OTEL Collector)
-otel_endpoint: http://localhost:4318
-
-# Debug (spans on stderr)
-otel_endpoint: stdout
-```
-
-Zero new dependencies. Each span includes `agent.id`, `tool.name`, `policy.action`, `approval.*`, and `llm.token.*` attributes. See [docs/otel.md](docs/otel.md) for details.
-
-### Tool discovery
-
-Auto-discover tools from upstream sources and generate starter policies:
-
-```bash
-# Discover tools from MCP servers in config
-./agent-mesh discover --config config.yaml
-
-# Generate a safe starter policy (reads allowed, writes denied)
-./agent-mesh discover --config config.yaml --generate-policy
-
-# Discover from an OpenAPI spec
-./agent-mesh discover --openapi https://petstore.swagger.io/v2/swagger.json --generate-policy
-```
-
-### CLI (`mesh`)
-
-Manage approvals from a separate terminal:
-
-```bash
-mesh pending                    # List pending approvals
-mesh show a1b2c3d4              # Full details with params
-mesh approve a1b2c3d4           # Approve by ID prefix
-mesh deny a1b2c3d4              # Deny by ID prefix
-mesh watch                      # Interactive mode — approve/deny as they come
-```
-
-## The 3 modes
-
-```
-┌─────────────────────────────────────────────────────────┐
-│                     agent-mesh                          │
-│                                                         │
-│  ┌─────────────┐     ┌──────────┐     ┌─────────────┐  │
-│  │ IMPORT      │     │          │     │ EXPORT      │  │
-│  │ OpenAPI     │────>│ Registry │────>│ MCP server  │  │
-│  │ (Swagger)   │     │ (tools)  │     │ (stdio)     │  │
-│  └─────────────┘     │          │     └──────┬──────┘  │
-│  ┌─────────────┐     │          │            │         │
-│  │ IMPORT      │────>│          │            v         │
-│  │ MCP servers │     │          │     Claude, Cursor,  │
-│  │ (stdio/SSE) │     └──────────┘     any MCP client   │
-│  └─────────────┘          │                            │
-│                     policy · approval · trace           │
-└─────────────────────────────────────────────────────────┘
-```
-
-### Import OpenAPI
-
-Turn any REST API into governed tools:
-
-```bash
-./agent-mesh --mcp --openapi https://petstore.swagger.io/v2/swagger.json --config config.yaml
-```
-
-### Import MCP
-
-Connect to upstream MCP servers (stdio or SSE), discover tools, add governance:
+### MCP servers
 
 ```yaml
 mcp_servers:
@@ -570,52 +175,233 @@ mcp_servers:
       Authorization: "Bearer <token>"
 ```
 
-### Export MCP
+### OpenAPI specs
 
-Expose all governed tools as a standard MCP server for Claude Code, Cursor, or any MCP client:
-
-```bash
-claude mcp add agent-mesh -- ./agent-mesh --mcp --config config.yaml
-```
-
-All modes compose. Import REST + MCP, apply one policy, export as unified MCP.
-
-## Example: travel agent
-
-A multi-tool agent with zero API keys, zero code — just YAML:
+Import REST APIs as governed tools — persisted across restarts.
 
 ```yaml
-mcp_servers:
-  - name: weather
-    transport: stdio
-    command: npx
-    args: ["-y", "open-meteo-mcp-server"]
+openapi:
+  # From URL
+  - url: https://date.nager.at/swagger/v3/swagger.json
 
-  - name: flights
-    transport: stdio
-    command: npx
-    args: ["-y", "google-flights-mcp-server"]
+  # From local file
+  - file: ./specs/internal-api.json
+    backend_url: http://localhost:3001
+```
 
-  - name: travel
-    transport: stdio
-    command: npx
-    args: ["-y", "travel-mcp"]
+Each endpoint becomes a tool (e.g. `get_public_holidays`). Same policy, same traces as MCP tools.
 
+### CLI tools
+
+Wrap any CLI binary behind policy, approval, and tracing:
+
+```yaml
+cli_tools:
+  - name: gh
+    bin: gh
+    default_action: allow
+
+  - name: terraform
+    bin: terraform
+    default_action: human_approval
+    commands:
+      plan:
+        timeout: 120s
+
+  - name: kubectl
+    bin: kubectl
+    strict: true      # only declared commands, everything else denied
+    commands:
+      get:
+        allowed_args: ["-n", "--namespace", "-o"]
+```
+
+Agents call CLI tools like any MCP tool — `terraform.plan`, `kubectl.get`, `gh.pr`. See [docs/cli-tools.md](docs/cli-tools.md).
+
+### Policies
+
+YAML-based, first-match-wins, glob patterns for agents and tools.
+
+```yaml
 policies:
-  - name: claude
-    agent: "claude"
+  - name: support-agent
+    agent: "support-*"
+    rate_limit:
+      max_per_minute: 30
+      max_total: 1000
     rules:
-      - tools: ["weather.*", "flights.*", "travel.*"]
+      - tools: ["*.read_*", "*.list_*", "*.get_*"]
         action: allow
-
-  - name: default
-    agent: "*"
-    rules:
+      - tools: ["create_refund"]
+        action: allow
+        condition:
+          field: "params.amount"
+          operator: "<"
+          value: 500
       - tools: ["*"]
         action: deny
 ```
 
-Result: Claude searches flights, checks weather, estimates budgets — all traced through agent-mesh.
+| Action | Behavior |
+|--------|----------|
+| `allow` | Forward to backend, return result |
+| `deny` | Block the call, return denial |
+| `human_approval` | Require human approval before forwarding |
+
+**Fail closed:** no matching rule = deny.
+
+### Per-agent policy files
+
+One file per agent, drop-in/drop-out:
+
+```yaml
+# config.yaml
+policy_dir: ./policies   # load all *.yaml from this directory
+```
+
+```yaml
+# policies/scout7.yaml
+name: scout7
+agent: "scout7"
+rate_limit:
+  max_per_minute: 30
+rules:
+  - tools: ["searxng.*", "fetch.*", "ollama.*", "memory.*"]
+    action: allow
+  - tools: ["*"]
+    action: deny
+```
+
+Files are loaded alphabetically after inline `policies:`. Duplicate names produce an error.
+
+### Supervisor mode
+
+```yaml
+supervisor:
+  enabled: true          # hide approval tools from agents
+  expose_content: false  # redact raw params → structural metadata
+```
+
+When enabled, `approval.resolve` and `approval.pending` are hidden from agents — only an external supervisor can resolve approvals. See [docs/supervisor-protocol.md](docs/supervisor-protocol.md).
+
+### Other settings
+
+```yaml
+port: 9090                                   # HTTP port (default 9090)
+trace_file: traces.jsonl                     # JSONL persistence
+otel_endpoint: /path/to/traces-otel.jsonl    # or "stdout" or "http://localhost:4318"
+approval:
+  timeout_seconds: 300                       # approval TTL (default 5 min)
+  notify_url: https://hooks.slack.com/...    # webhook on new pending approval
+```
+
+---
+
+## Features
+
+### Human approval
+
+When a policy requires `human_approval`, the flow is non-blocking:
+
+```
+Claude calls filesystem.write_file
+  → agent-mesh returns: "Approval required (id: a1b2c3d4)"
+  → Claude calls approval.resolve(id: a1b2c3d4, decision: approve)
+  → agent-mesh replays the original tool call
+  → Result returned to Claude
+```
+
+Virtual MCP tools: `approval.resolve`, `approval.pending`.
+Also via CLI (`mesh approve <id>`) or HTTP API (`POST /approvals/{id}/approve`).
+
+### Temporal grants
+
+Like `sudo` for agents — temporary override for repeated approvals:
+
+```
+"Grant filesystem.write_* for 30 minutes"
+→ grant.create {tools: "filesystem.write_*", duration: "30m"}
+→ All filesystem.write_* calls bypass approval for 30m
+→ Traced as "grant:a1b2c3d4"
+```
+
+Virtual MCP tools: `grant.create`, `grant.list`, `grant.revoke`.
+
+Grants only bypass `human_approval`. Tools marked `deny` remain blocked — policy edit required.
+
+### Rate limiting
+
+Per-agent call limits with automatic loop detection:
+
+| Protection | What it stops |
+|------------|--------------|
+| `max_per_minute` | Runaway loops |
+| `max_total` | Budget exhaustion |
+| Loop detection | Same tool + same params > 3x in 10s |
+
+### Tracing & sessions
+
+Every tool call is logged: agent, tool, params, policy decision, latency, approval metadata.
+
+```bash
+curl http://localhost:9090/traces?agent=claude&tool=filesystem.write_file
+curl http://localhost:9090/sessions          # list sessions
+curl http://localhost:9090/sessions/abc123   # session detail
+```
+
+Session IDs are propagated via `X-Session-Id` header or `--mcp-session-id` flag.
+
+### OpenTelemetry export
+
+```yaml
+otel_endpoint: /path/to/traces-otel.jsonl   # file
+otel_endpoint: stdout                        # debug
+otel_endpoint: http://localhost:4318         # Jaeger, Tempo, Datadog
+```
+
+Each span includes `agent.id`, `tool.name`, `policy.action`, `approval.*`, and `llm.token.*` attributes. See [docs/otel.md](docs/otel.md).
+
+### Supervisor protocol
+
+External supervisor agents can poll `GET /approvals?status=pending`, evaluate with full context (recent traces, active grants, injection risk), and resolve with structured verdicts (reasoning, confidence). See [docs/supervisor-protocol.md](docs/supervisor-protocol.md).
+
+---
+
+## Commands & flags
+
+### `agent-mesh` (main binary)
+
+```bash
+agent-mesh [flags]                           # run proxy (HTTP or MCP mode)
+agent-mesh discover [flags]                  # discover tools + generate policy
+agent-mesh --version                         # print version
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--config` | `config.yaml` | Path to YAML config |
+| `--openapi` | | OpenAPI spec URL (ephemeral, for quick tests) |
+| `--backend` | | Backend base URL override |
+| `--port` | from config or `9090` | Port override |
+| `--mcp` | `false` | MCP mode (stdio JSON-RPC instead of HTTP) |
+| `--mcp-agent` | `claude` | Agent ID for MCP-mode policy evaluation |
+| `--mcp-session-id` | auto-generated | Session ID for MCP traces |
+
+`discover` flags: `--openapi <url>`, `--config <path>`, `--generate-policy`, `--backend <url>`.
+
+### `mesh` (approval CLI)
+
+```bash
+mesh pending                    # list pending approvals
+mesh show <id>                  # full details
+mesh approve <id>               # approve
+mesh deny <id>                  # deny
+mesh watch                      # interactive poll + prompt
+```
+
+Set `MESH_URL` to override the default `http://localhost:9090`.
+
+---
 
 ## API
 
@@ -623,174 +409,78 @@ Result: Claude searches flights, checks weather, estimates budgets — all trace
 |--------|------|-------------|
 | `POST` | `/tool/{name}` | Proxy a tool call through policy |
 | `GET` | `/tools` | List all registered tools |
-| `GET` | `/mcp-servers` | List connected upstream MCP servers |
-| `GET` | `/traces` | Query trace history (`?agent=...&tool=...`) |
-| `GET` | `/otel-traces` | Query OTEL spans recorded on this instance (OTLP JSON) |
-| `GET` | `/approvals` | List approvals (`?status=pending`, `?tool=filesystem.*`) |
-| `GET` | `/approvals/{id}` | Approval detail with agent context (recent traces, active grants) |
-| `POST` | `/approvals/{id}/approve` | Approve (optional: `reasoning`, `confidence`) |
-| `POST` | `/approvals/{id}/deny` | Deny (optional: `reasoning`, `confidence`) |
-| `GET` | `/grants` | List active temporal grants |
-| `POST` | `/grants` | Create a temporal grant |
+| `GET` | `/mcp-servers` | List connected MCP servers |
+| `GET` | `/traces` | Query traces (`?agent=...&tool=...`) |
+| `GET` | `/sessions` | List sessions (id, agent, event count, timespan) |
+| `GET` | `/sessions/{id}` | Session detail |
+| `GET` | `/otel-traces` | OTLP JSON spans (`?agent=...&tool=...&limit=...`) |
+| `GET` | `/approvals` | List approvals (`?status=pending&tool=filesystem.*`) |
+| `GET` | `/approvals/{id}` | Approval detail with context |
+| `POST` | `/approvals/{id}/approve` | Approve (optional: reasoning, confidence) |
+| `POST` | `/approvals/{id}/deny` | Deny (optional: reasoning, confidence) |
+| `GET` | `/grants` | List active grants |
+| `POST` | `/grants` | Create a grant |
 | `DELETE` | `/grants/{id}` | Revoke a grant |
 | `GET` | `/health` | Health check and stats |
+| `GET` | `/version` | Version info |
 
-## Commands & flags
-
-### Subcommands
-
-```bash
-agent-mesh version                          # Print version, commit, build date
-agent-mesh discover [flags]                 # Discover tools + generate starter policy
-```
-
-`discover` inspects either an OpenAPI spec or the MCP servers declared in a config, lists every tool it finds, and optionally emits a safe starter policy (reads allowed, writes denied):
-
-```bash
-agent-mesh discover --openapi https://petstore.swagger.io/v2/swagger.json
-agent-mesh discover --config config.yaml --generate-policy > policy.yaml
-```
-
-### Run flags
-
-```bash
-agent-mesh [flags]
-```
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--version` | | Print version and exit |
-| `--config` | `config.yaml` | Path to YAML config |
-| `--openapi` | | OpenAPI spec URL |
-| `--backend` | | Backend base URL override |
-| `--port` | from config or `9090` | Port override |
-| `--mcp` | `false` | Export MCP mode (stdio JSON-RPC instead of HTTP) |
-| `--mcp-agent` | `claude` | Agent ID for MCP-mode policy evaluation |
-
-### Health & liveness
-
-The HTTP admin API is always served on `--port` (default `9090`), in both HTTP and MCP modes.
-
-```bash
-curl http://localhost:9090/health
-
-# Probe-friendly
-curl -fsS http://localhost:9090/health > /dev/null && echo ok
-```
-
-Suitable as a Docker `HEALTHCHECK`, systemd watchdog, or Kubernetes liveness/readiness probe. The same port exposes `/tools`, `/mcp-servers`, `/traces`, `/otel-traces`, `/approvals`, `/grants` — see the **API** section below.
+---
 
 ## Project structure
 
 ```
 agent-mesh/
 ├── cmd/
-│   ├── agent-mesh/        # Main binary — entry point, wires everything
-│   │   ├── main.go
-│   │   └── discover.go    # `discover` subcommand + policy generation
+│   ├── agent-mesh/        # Main binary (entry point, wiring)
 │   └── mesh/              # Approval CLI (pending/approve/deny/watch)
-│       └── main.go
-├── config/
-│   └── config.go          # YAML config + policy + MCP server definitions
-├── registry/
-│   ├── registry.go        # Tool/Param types, Registry (Get/All/Remove)
-│   ├── openapi.go         # Import OpenAPI → tool catalog
-│   ├── mcp.go             # Import MCP → tool catalog
-│   └── cli.go             # Import CLI tools → tool catalog
-├── exec/
-│   └── runner.go          # Secure CLI execution (no shell, arg validation, timeout)
-├── policy/
-│   └── engine.go          # Rule evaluation engine (glob patterns, conditions)
-├── grant/
-│   └── store.go           # Temporal grants (sudo for agents, TTL-based)
-├── ratelimit/
-│   └── limiter.go         # Per-agent rate limiting + loop detection
-├── supervisor/
-│   ├── content.go         # Content isolation (redact params → metadata)
-│   └── injection.go       # Prompt injection detection in tool params
-├── proxy/
-│   └── handler.go         # HTTP proxy (auth → rate limit → policy → forward → trace)
-├── mcp/
-│   ├── server.go          # Export MCP (stdio JSON-RPC, virtual approval tools)
-│   ├── client.go          # Import MCP (connect to upstream, stdio + SSE)
-│   ├── manager.go         # Manages N upstream MCP connections
-│   ├── transport.go       # Transport abstraction
-│   └── transport_sse.go   # SSE transport implementation
-├── approval/
-│   └── store.go           # Channel-based approval store with timeout
-├── trace/
-│   ├── store.go           # In-memory trace store + JSONL persistence
-│   └── otel.go            # OpenTelemetry OTLP exporter (file, stdout, HTTP)
+├── config/                # YAML config parsing + validation
+├── registry/              # Tool registry (OpenAPI + MCP + CLI imports)
+├── policy/                # Rule evaluation (globs, conditions, fail-closed)
+├── proxy/                 # HTTP handler (auth → rate limit → policy → forward → trace)
+├── mcp/                   # MCP client/server/transport (stdio + SSE)
+├── approval/              # Channel-based approval store with timeout
+├── grant/                 # Temporal grants (TTL-based sudo)
+├── ratelimit/             # Sliding window + loop detection
+├── supervisor/            # Content isolation + injection detection
+├── exec/                  # Secure CLI execution (no shell, arg validation)
+├── trace/                 # In-memory + JSONL + OTEL export
 ├── policies/              # Per-agent policy files (used with policy_dir)
-│   └── default.yaml       # Catch-all deny (add your own *.yaml per agent)
-├── examples/              # Example config files
-│   ├── filesystem.yaml    # Filesystem governance (read/write/deny)
-│   ├── petstore.yaml      # OpenAPI import demo (Petstore)
-│   ├── travel-agent.yaml  # Multi-tool travel agent
-│   ├── cli-tools/         # CLI tool governance (terraform, kubectl, gh)
-│   └── langchain-agent/   # LangChain cross-agent governance demo
-└── docs/
-    ├── agent-landscape.md # AI agent CLI landscape survey
-    ├── otel.md            # OpenTelemetry export guide
-    └── positioning.md     # Market positioning and comparisons
+├── examples/              # Example configs (filesystem, petstore, travel, langchain)
+└── docs/                  # CLI tools guide, OTEL guide, supervisor protocol
 ```
 
 ## Tests
 
 ```bash
-go test ./...              # Run all tests
-go test ./... -race        # With race detector
-go test ./proxy/ -v        # One package
+go test ./...              # all tests
+go test ./... -race        # with race detector
 ```
 
-253 tests across 14 packages:
-
-| Package | Tests | Covers |
-|---------|-------|--------|
-| `config` | 25 | YAML parsing, defaults, MCP servers, conditions, CLI tools, supervisor config, policy_dir |
-| `registry` | 16 | CRUD, loading, namespacing, concurrent access, CLI modes, ResolveCLI |
-| `policy` | 9 | Allow/deny, conditions, wildcards, globs, fail-closed |
-| `proxy` | 36 | REST, MCP, CLI calls, approval flows, supervisor protocol, content redaction |
-| `exec` | 30 | Arg validation, shell injection, timeout, output cap, env isolation |
-| `grant` | 8 | Create, check, revoke, expiration, cleanup, glob matching |
-| `ratelimit` | 8 | Per-minute, total budget, loop detection, agent isolation |
-| `trace` | 14 | Record, filter, eviction, stats, JSONL persistence, supervisor fields, OTEL export |
-| `mcp` | 33 | Client lifecycle, timeouts, SSE transport, approval flow, supervisor mode |
-| `supervisor` | 30 | Content redaction, type detection, injection detection (positive/negative) |
-| `approval` | 17 | Submit, resolve, timeout, prefix match, concurrent, notify |
+207 tests across 13 packages covering config parsing, policy evaluation, HTTP/MCP proxy flows, approval lifecycle, CLI execution security, rate limiting, tracing, OTEL export, supervisor content isolation, and injection detection.
 
 ## Roadmap
 
-- [x] Import OpenAPI
-- [x] Import MCP (stdio + SSE)
-- [x] Export MCP (stdio)
-- [x] Policy engine with glob patterns
-- [x] Human approval (non-blocking, virtual MCP tools)
-- [x] Approval CLI (`mesh` binary)
-- [x] Trace store with query API + JSONL persistence
-- [x] Tool discovery + policy generation
-- [ ] JWT agent credentials (scopes + budget)
-- [x] Rate limiting per agent (sliding window + total budget + loop detection)
-- [x] Temporal grants (sudo for agents — `grant.create` MCP tool + HTTP API)
-- [x] Async approval (202 + poll via MCP virtual tools, HTTP API)
-- [x] CLI tool governance (terraform, kubectl, etc. — 3 modes, arg validation, secure exec)
-- [x] Supervisor agent protocol (structured verdicts, content isolation, injection detection)
-- [x] OpenTelemetry trace export (OTLP JSON — file, stdout, HTTP)
-- [x] Per-agent policy files (`policy_dir` — one YAML per agent)
-- [ ] Dashboard UI
+- [x] Import OpenAPI (URL + file), MCP (stdio + SSE), CLI binaries
+- [x] Policy engine with glob patterns + conditions
+- [x] Human approval (non-blocking, virtual MCP tools, CLI, HTTP)
+- [x] Temporal grants (sudo for agents)
+- [x] Rate limiting + loop detection
+- [x] Trace store + JSONL + OTEL export
+- [x] Per-agent policy files + specificity sort
+- [x] Session tracking
+- [x] Supervisor protocol (content isolation, injection detection)
+- [x] CLI tool governance (3 modes, secure exec)
+- [x] OpenAPI config field (persistent import)
+- [x] Dashboard UI (via [agent7](https://github.com/KTCrisis/agent7))
+- [ ] `agent-mesh serve` daemon mode (persistent, multi-client)
+- [ ] Policy hot-reload
+- [ ] JWT agent credentials
 
 ## Why "Agent Mesh"
 
 The same way Envoy sits between microservices and adds observability, auth, and rate limiting without changing service code — Agent Mesh sits between AI agents and their tools.
 
 Agents don't know the proxy exists. They call tools, get results. The governance layer is invisible to the agent, visible to the operator.
-
-| It is | It is not |
-|-------|-----------|
-| A policy + governance layer for tool calls | An API gateway |
-| A lightweight local sidecar binary | An agent framework |
-| Config-as-code with YAML | A cloud platform |
-| An observability layer for agent actions | An MCP hosting service |
 
 ## License
 
